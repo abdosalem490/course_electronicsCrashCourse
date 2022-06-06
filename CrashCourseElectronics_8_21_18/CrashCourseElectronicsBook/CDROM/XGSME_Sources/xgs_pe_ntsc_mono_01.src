@@ -1,0 +1,370 @@
+; /////////////////////////////////////////////////////////////////////////////
+;
+; XGS_PE_NTSC_MONO_01.SRC - Mono Test
+; This demo draws a single solid white bar midway on the screen
+;
+; Architecture 3 - Media System
+; 4-bit video drive
+;
+;          Audio  upper 4-bits                    |          Intensity (Luma) lower 4-bits
+;
+; | AUD_ISEL3 | AUD_ISEL2 | AUD_ISEL1 | AUD_ISEL0 | VID_ISEL3 | VID_ISEL2 | VID_ISEL1 | VID_ISEL0 |
+;
+;      b7          b6          b5          b4          b3          b2           b1         b0                                             
+;      
+;
+; The Media Hardware Port Mapping Bits from the SX28
+;
+;Port Bit	XGS PE Bit	Description
+
+; RC0 		VID_ISEL0	Bit 0 of the intensity signal that controls LUMA.
+; RC1 		VID_ISEL1	Bit 1 of the intensity signal that controls LUMA.
+; RC2 		VID_ISEL2  	Bit 2 of the intensity signal that controls LUMA.
+; RC3 		VID_ISEL3 	Bit 3 of the intensity signal that controls LUMA.
+
+; RC4 		AUD_ISEL0	Bit 0 of the audio value.
+; RC5  		AUD_ISEL1	Bit 1 of the audio value.
+; RC6  		AUD_ISEL2	Bit 2 of the audio value.
+; RC7  		AUD_ISEL3	Bit 3 of the audio value.
+;
+; Notes on video hardware specs
+;
+; Intensity .3v (6) approx. black, 0.0v sync (0), allows 10 shades roughly :)
+;
+; Refer to the documents below for information on video technology and the RS-170 NTSC timings
+; http://www.ee.washington.edu/conselec/CE/kuhn/ntsc/95x4.htm
+; http://www.bealecorner.com/trv900/tech/RS170A.jpg
+; http://www.bealecorner.com/trv900/tech/
+; http://www.maxim-ic.com/appnotes.cfm/appnote_number/734/ln/en
+; http://pdfserv.maxim-ic.com/en/an/AN734.pdf
+;
+; video signal looks like this roughly:
+;	
+; Blank and White signal		
+;		  	                              
+;		                                                      <-                            video, pixel data 52.6us                  ->
+;(white)   1.0-1.5V                                                   *******************************************************.....************** 
+;		                                                      *							 		       *	
+;		 "front porch"                                        *                                                                        *
+;		                                                      *                                                                        *
+;		  1.5us              <-          4.7us              ->*                                                                        *
+;(black)  0.3V    ****               **********************************                                                                        *
+;		     *               *        "back porch"
+;		     *<-    4.7us  ->* 
+;(sync)	   0.0V      *****************
+;		       hsync pulse
+;	  	  <----------------------------------------------                63.5us                    ------------------------------------>
+;
+; Color Signal		
+;		  	                              
+;		                                                      <-                            video, pixel data 52.6us                  ->
+;(white)   1.0-1.5V                                                   *******************************************************.....************** 
+;		                     <-          4.7us              ->*							 		       *	
+;		 "front porch"                color burst 9 cycles    *                                                                        *
+;		                         /\      /\   2.5us      /\   *                                                                        *
+;		  1.5us             .6us/  \    /  \            /  \  *                                                                        *
+;(black)  0.3V    ****               ***    \  /    \  ....... /    ***                                                                        *
+;		     *               *       \/      \/             1.6us
+;		     *<-    4.7us  ->* 
+;(sync)	   0.0V      *****************        "back porch"
+;		       hsync pulse
+;	  	  <----------------------------------------------                63.5us                    ------------------------------------>
+;		
+;		
+;
+
+; /////////////////////////////////////////////////////////////////////////////
+; Set device attributes
+; /////////////////////////////////////////////////////////////////////////////
+
+; Set device to SX28, enable external high speed oscillator
+		DEVICE 	SX28L, STACKX, OPTIONX, TURBO
+		IRC_CAL IRC_FAST
+
+		RESET	Start		; set Restart vector to start of code
+		FREQ 	10_000_000
+CLK_SCALE	EQU	1		; set this to FREQ/10,000,000
+
+; /////////////////////////////////////////////////////////////////////////////
+; Defines
+; /////////////////////////////////////////////////////////////////////////////
+
+; sync and black
+
+BLACK_LEVEL	EQU	(6)			; approx. .3v
+SYNC		EQU	(0)			; no color burst with 0v
+BLACK		EQU	(BLACK_LEVEL)		; no color burst with .3v
+
+DARKGRAY	EQU	(8) 
+GRAY		EQU	(10)
+LIGHTGRAY	EQU	(12)
+WHITE		EQU	(15)
+
+OVERSCAN_COLOR	EQU	WHITE
+HSYNC_COMP	EQU     (0)
+
+; /////////////////////////////////////////////////////////////////////////////
+; Global variables
+; /////////////////////////////////////////////////////////////////////////////
+
+counter		EQU	$08	; used for delay functions
+counter2	EQU	$09
+scanline	EQU	$0A	; tracks scanline
+luma		EQU	$0B	; luma
+
+; /////////////////////////////////////////////////////////////////////////////
+; Macros
+; /////////////////////////////////////////////////////////////////////////////
+
+; /////////////////////////////////////////////////////////////////////////////
+
+DELAY MACRO clocks
+; this new macro is slightly different than the one found in othe demos
+; this macro can handle large delays up to 25,500 cycles, so to call it use the following
+; constructions
+
+; cycle delay
+; DELAY(number_of_clocks)
+
+; for 80 mhz clock, microsecond parameters
+; DELAY(80*microseconds)
+; example you want a 4.5 uS delay
+; 80*4.5 = 36
+; DELAY(36)
+
+; the preprocessor can NOT do floating point math, so another construction would be to scale
+; all values by 10 then multiply by 8 rather than 80, for example, a 4.5 uS delay could be
+; written
+; DELAY(8*45)
+; which is a little more intuitive
+
+; first compute fractional remainder of 10 and delay
+IF (((clocks) // 10) > 0)
+
+; first 3 clock chunks
+	REPT (((clocks) // 10)/3)
+	JMP $ + 1
+	ENDR
+
+; now the remainder if any
+
+	REPT (((clocks) // 10)//3)
+	NOP
+	ENDR
+ENDIF
+
+; next multiples of 100
+IF (((clocks) / 100) >= 1)
+
+; delay 100*(clocks/100), loop equals 100, therefore 1*(clocks/100) iterations
+	mov counter, #((clocks)/100) 	; (2)
+:Loop					
+
+	mov counter2, #24	 	; (2)
+:Loop100					
+	djnz counter2, :Loop100		; (4/2)
+
+	djnz counter, :Loop		; (4/2)
+ENDIF
+
+; last compute whole multiples of 10, and delay
+IF (( ((clocks) // 100) / 10) >= 1)
+
+; delay 10*(clocks/10), loop equals 10, therefore (clocks/10) iterations
+	mov counter, #( ((clocks) // 100) / 10) 	; (2)
+:Loop2					
+	jmp $ + 1			; (3)
+	jmp $ + 1			; (3)
+	djnz counter, :Loop2		; (4/2)
+ENDIF
+
+ENDM
+
+; /////////////////////////////////////////////////////////////////////////////
+
+; /////////////////////////////////////////////////////////////////////////////
+; Data watches
+; /////////////////////////////////////////////////////////////////////////////
+
+; /////////////////////////////////////////////////////////////////////////////
+; Subroutines
+; /////////////////////////////////////////////////////////////////////////////
+
+		org 	$0
+
+; /////////////////////////////////////////////////////////////////////////////
+;  Begin program after Restart
+; /////////////////////////////////////////////////////////////////////////////
+
+		ORG $000
+Start		
+		; Initialize I/O controller for Pico Edition A->Input, B->Output, C->Output
+
+		mov	w, #$1F		; Set mode register to write direction register
+		mov	m, w
+
+		mov	RA, #%00000000	; Set port A output latch to zero
+		mov	!RA, #%00000000	; Set port A direction
+
+		mov	RC, #%00000000	; Set port C output latch to zero
+		mov	!RC, #%00000000	; Set port C direction
+
+		mov 	!RB, #%11111111 ; Set port B direction 
+		mov	w, #$1E		; Set mode register to write pullup resistor
+		mov	m, w
+		mov	!RB, #%00000000 ; Set joystick inputs pullups on (0=on, 1=off)
+
+; /////////////////////////////////////////////////////////////////////////////
+;  Main program loop
+; /////////////////////////////////////////////////////////////////////////////
+
+Main		
+
+; 192 scanlines of active video 
+
+Begin_Raster
+
+		mov scanline, #192	; Render 192 active scanlines
+Raster_Loop1
+
+; front porch 1.5us 
+
+		mov RC, #BLACK		; ( 2 cycles )
+		DELAY (CLK_SCALE*15 - 2)
+
+; hsync 4.7us
+		mov RC, #SYNC		; ( 2 cycles )
+		DELAY (CLK_SCALE*47 - 2)
+
+; pre-burst .6us
+		mov RC, #BLACK		; ( 2 cycles )
+		DELAY (CLK_SCALE*6 - 2)
+
+; color burst Reference 2.5us (9-10 clocks)
+		mov RC, #BLACK		; ( 2 cycles )
+		DELAY (CLK_SCALE*25 - 2)
+
+; post-burst 1.6us
+
+		mov RC, #BLACK		; ( 2 cycles )
+		DELAY (CLK_SCALE*16 - 2)
+
+; draw scanline (52.6 us)
+
+		DELAY(CLK_SCALE*260)
+
+Bar_Loop_Init
+
+		mov RC, #WHITE		;(2 cycles)
+		DELAY(CLK_SCALE*25)
+		mov RC, #BLACK		;(2 cycles)
+
+Bar_Loop_End
+
+
+		DELAY(CLK_SCALE*526 - CLK_SCALE*260 - 2 - CLK_SCALE*25 - 2)
+; loop
+		djnz scanline, Raster_Loop1
+
+; /////////////////////////////////////////////////////////////////////////////
+; VERTICAL BLANKING AND SYNC 
+; /////////////////////////////////////////////////////////////////////////////
+
+; /////////////////////////////////////////////////////////////////////////////
+; BOTTOM SCRCEN OVERSCAN
+; /////////////////////////////////////////////////////////////////////////////
+
+		mov scanline, #28	; (2 cycles)
+Vblank_Loop1
+
+; front porch 1.5us 
+		mov RC, #BLACK		; ( 2 cycles )
+		DELAY (CLK_SCALE*15-2)
+		
+; hsync 4.7us
+		mov RC, #SYNC		; ( 2 cycles )
+		DELAY (CLK_SCALE*47 - 2)
+		
+; pre-burst .6us
+		mov RC, #BLACK		; ( 2 cycles )
+		DELAY (CLK_SCALE*6 - 2)
+		
+
+; color burst reference 2.5us (9-10 clocks)
+		mov RC, #BLACK		; ( 2 cycles )
+		DELAY (CLK_SCALE*25 - 2)
+		
+; post-burst 1.6us
+		mov RC, #BLACK		; ( 2 cycles )
+		DELAY (CLK_SCALE*16 - 2)
+
+; draw scanline (52.6 us)
+		mov RC, #OVERSCAN_COLOR		; ( 2 cycles )
+		DELAY (CLK_SCALE*526 - 2 - 4)
+		
+; loop
+		djnz scanline, Vblank_Loop1
+
+; /////////////////////////////////////////////////////////////////////////////
+; END BOTTOM SCRCEEN OVERSCAN
+; /////////////////////////////////////////////////////////////////////////////
+
+
+; /////////////////////////////////////////////////////////////////////////////
+; VERTICAL SYNC PULSE
+; /////////////////////////////////////////////////////////////////////////////
+; enable sync for 4 scanlines worth of time
+
+		mov scanline, #4
+Vblank_Loop2 
+		mov RC, #SYNC		; ( 2 cycles )
+		DELAY (CLK_SCALE*635 - 2 - 4)
+		djnz scanline, Vblank_Loop2
+
+; /////////////////////////////////////////////////////////////////////////////
+; END VERTICAL SYNC PULSE
+; /////////////////////////////////////////////////////////////////////////////
+
+
+; /////////////////////////////////////////////////////////////////////////////
+; TOP SCRCEEN OVERSCAN
+; /////////////////////////////////////////////////////////////////////////////
+
+		mov scanline, #38	; render scanlines
+Vblank_Loop3
+
+; front porch 1.5us 
+		mov RC, #BLACK		; ( 2 cycles )
+		DELAY (CLK_SCALE*15-2)
+		
+; hsync 4.7us
+		mov RC, #SYNC		; ( 2 cycles )
+		DELAY (CLK_SCALE*47 - 2)
+		
+; pre-burst .6us
+		mov RC, #BLACK		; ( 2 cycles )
+		DELAY (CLK_SCALE*6 - 2)
+		
+; color burst reference 2.5us (9-10 clocks)
+		mov RC, #BLACK		; ( 2 cycles )
+		DELAY (CLK_SCALE*25 - 2)
+		
+; post-burst 1.6us
+		mov RC, #BLACK		; ( 2 cycles )
+		DELAY (CLK_SCALE*16 - 2)
+
+; draw scanline (52.6 us)
+		mov RC, #OVERSCAN_COLOR	; ( 2 cycles )
+		DELAY (CLK_SCALE*526 - 2 - 4)
+		
+; loop
+		djnz scanline, Vblank_Loop3
+
+; /////////////////////////////////////////////////////////////////////////////
+; END TOP SCREEN OVERSCAN
+; /////////////////////////////////////////////////////////////////////////////
+
+		jmp Begin_Raster
+
+; /////////////////////////////////////////////////////////////////////////////
+

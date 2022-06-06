@@ -1,0 +1,1812 @@
+; REM_PAC_01.SRC
+
+    TITLE    "Rem Pac Guy v01"
+; This is a pac-man clone by Remi Veilleux
+; It works only at 80 MHz
+; It uses no SRAM and have crude sound
+; My personal highscore: 13640 (it was getting late, you can beat that easily!)
+
+; Known bug: The game crashed while eating a power pill. It happened twice, I have absolutely
+; no idea where or why.
+
+; Known problem: The debugger is not able to run this game.
+; You can try it, you simply have to uncommented the if and endif at the bottom of this file.
+
+
+; This file needs 3 include files:
+;     general_define.src:  Defines constants (EQU) and some system variables
+;    general_macro.src: Useful general purpose macro definitions and system functions
+;    general_function.src: System functions that are called instead of macro
+
+    DEVICE    SX52, OSCHS3, XTLBUFD, IFBD    ; Set everything for the XGS ME
+    RESET    Start
+    FREQ     80_000_000     ; this is a directive to the ide only
+                  ; if you want to put the XGS ME into RUN mode
+                  ; you must make sure you go into the
+                ; device settings and make sure that
+                ; HS3 is enabled, and crystal drive and
+                ; feedback are disabled and then re-program
+                ; the chip in PGM mode and then switch it to RUN
+
+    IRC_CAL IRC_FAST    ; Prevent a warning
+    ID    "rempac"    ; ID string
+
+
+; Global variables, starting at bank #2
+        org    $20
+
+include        "general_define.src"
+
+        org $20
+level_color    ds    1    ; Current level color
+level_color_bac    ds    1    ; Current level color backup
+scfreq        ds    1    ; Current sound frequency
+scfreq_acc    ds    1    ; Sound frequency accumulator
+scanline    ds    1    ; Current drawing scanline counter
+overscan_color    ds    1     ; current overscan color
+blink_start     ds    1    ; Blinking text
+vertical_tile_counter ds 1    ; Current vertical tile number 0..23
+frame_counter    ds     1    ; Increment 1 after each frame
+joystick2_back    ds    1    ; backup global register
+joystick_back    ds    1    ; backup global register
+counter2_back    ds    1    ; backup global register
+counter3_back    ds    1    ; backup global register
+game_state    ds    1    ; current game state
+life_count    ds    1    ; number of life left
+
+        org $30
+pac_x        ds    1    ; Current pac position 'x'
+pac_y        ds    1    ; Current pac position 'y'
+pac_frame    ds    1    ; Current pac frame
+sprite_x    ds    1    ; Current sprite drawn 'x'
+sprite_y    ds    1    ; Current sprite drawn 'y'
+sprite_color    ds    1    ; Current sprite drawn color
+ghost1_x    ds    1    ; ghost position and stuff
+ghost1_y    ds    1
+ghost1_color    ds    1
+ghost2_x    ds    1
+ghost2_y    ds    1
+ghost2_color    ds    1
+ghost3_x    ds    1
+ghost3_y    ds    1
+ghost3_color    ds    1
+ghost_frame    ds    1
+
+        org $40
+score_1        ds    1    ; score '1' tile number
+score_10    ds    1    ; score '10' tile number
+score_100    ds    1    ; score '100' tile number
+score_1000    ds    1    ; score '1000' tile number
+score_10000    ds    1    ; score '10000' tile number
+high_score_1    ds    1    ; high score '1' tile number
+high_score_10    ds    1    ; high score '10' tile number
+high_score_100    ds    1    ; high score '100' tile number
+high_score_1000    ds    1    ; high score '1000' tile number
+high_score_10000 ds    1    ; high score '10000' tile number
+level_pellet_count ds    1    ; pellet counter to check for level finish
+
+            org $50
+temp_try_dir        ds    1    ; temp try direction
+temp_direction        ds    1    ; current object direction to evaluate
+temp_prev_dir        ds    1    ; current object previous direction to evaluate
+temp_is_ghost        ds    1    ; Special flag for ghost (they can pass thru the ghost door)
+pac_direction        ds    1    ; pac desired direction
+pac_prev_dir        ds    1    ; pac previous direction
+ghost1_direction    ds    1    ; ghost1 desired direction
+ghost1_prev_dir        ds    1    ; ghost1 previous direction
+ghost2_direction    ds    1    ; ghost2 desired direction
+ghost2_prev_dir        ds    1    ; ghost2 previous direction
+ghost3_direction     ds    1    ; ghost3 desired direction
+ghost3_prev_dir        ds    1    ; ghost3 previous direction
+power_pill_active     ds    1    ; Is a power-pill in progress?
+ghost_process_dir     ds    1    ; temp variable for current ghost processing
+ghost_process_prev_dir    ds     1    ; temp variable for current ghost processing
+
+POWER_PILL_TIME        equ    26
+
+        watch counter, 8, udec
+        watch counter2, 8, udec
+        watch counter3, 8, udec
+        watch counter4, 8, udec
+        watch joystick2, 8, udec
+        watch joystick1, 8, udec
+
+include        "general_macro.src"
+
+        org     $0    ; Set the start of the program code
+
+        ; Interrupt handler goes here (ISR)
+        ; Not used in this demo. Interrupt are tricky and not safe when doing
+        ; video signal output because it could insert undesirable clock cycle.
+        ;reti
+
+        org    $+2    ; leave 2 free word here for the debugger
+
+include     "general_function.src"
+
+        ; Add_score function. Input: 'counter' is the number of points to add
+add_score
+        ; switch to score mem bank
+        mov FSR, #$40
+:loop_add_score
+        add score_1, #8
+        cjb score_1, #88, :end_loop_add_score
+        mov score_1, #8
+        add score_10, #8
+        cjb score_10, #88, :end_loop_add_score
+        mov score_10, #8
+        add score_100, #8
+        cjb score_100, #88, :end_loop_add_score
+        mov score_100, #8
+        add score_1000, #8
+        cjb score_1000, #88, :end_loop_add_score
+        mov score_1000, #8
+        add score_10000, #8
+:end_loop_add_score
+        djnz counter, :loop_add_score
+        retp
+
+Start        ; Our real code starts here
+        ; WARNING: DON'T USE THE BANK INSTRUCTION
+        ; On SX52, it doesn't set the bit 7 so you might end up
+        ; on the wrong bank
+        mov FSR, #$40
+        mov W, #1*8
+        mov score_1, W
+        mov score_10, W
+        mov score_100, W
+        mov score_1000, W
+        mov score_10000, W
+        mov high_score_1, W
+        mov high_score_10, W
+        mov high_score_100, W
+        mov high_score_1000, W
+        mov high_score_10000, W
+        mov FSR, #$30
+        clr pac_x
+        clr ghost1_x
+        clr ghost2_x
+        clr ghost3_x
+        mov W, #200
+        mov pac_y, W ; put all sprites off screen at startup
+        mov ghost1_y, W ; put all sprites off screen at startup
+        mov ghost2_y, W ; put all sprites off screen at startup
+        mov ghost3_y, W ; put all sprites off screen at startup
+
+        ; clear all pellets
+        mov FSR, #$90
+        mov counter, #(19*2) ; (19 rows, 2 bytes per row)
+:fill_pellet
+        clr IND
+        inc FSR
+        djnz counter, :fill_pellet
+
+        mov FSR, #$20        ;This must be same as the org $20 statement
+
+        clr game_state
+        clr life_count
+        clr scfreq_acc        ; Set accumulator to 0
+        mov scfreq, #10        ; Initial sound frequency
+
+        mov blink_start, #9    ; Initial blink color = yellow
+        mov level_color, #231    ; Level starting color
+
+        INITIALIZE_VIDEO    ; Initialize I/O controller for video
+
+        ; ALWAYS INITIALIZE SOUND AFTER VIDEO
+        ; Else the system will 'crash', I don't know why
+        call @init_sound_system
+
+        mov overscan_color, #BLACK
+
+Begin_Raster    ; Loop here for each scanline
+        ; 'SCREEN_HEIGHT' (192) scanlines of active video
+        ;mov scanline, #SCREEN_HEIGHT    ; 2 render all active scanlines
+        mov FSR, #$20 ; 2
+        clr scanline ; 1
+
+        ; joystick2 will hold the current tile scanline (0..7)
+        clr joystick2    ; 1
+
+        ; joystick1 will be the 'current_tile'
+        clr joystick1    ; 1
+
+        mov counter3, #$0E    ; 2
+
+        clr vertical_tile_counter ; 1
+
+        DELAY(4200 - 8 - (504-40))    ; The first scanline left us 4200 free clocks
+
+Raster_Loop1
+        ; draw scanline (52.6 us, 4208 clocks available)
+        ; We'll use something like a 160x200 resolution
+        ; We must set a 504 clocks overscan on the left and on the right because
+        ; some TV have smaller video display (TV safe frame)
+        ; That gives us 3200 clocks for the actual scanline pixel data.
+
+        ; Set current color to the current 'overscan_color'
+        mov RE, overscan_color    ; 2
+
+        ; Construct one horizontal scanline into temporary RAM
+        ; This is done by using indirect (IND) addressing, so we can't access
+        ; our normal bank variable anymore. We are going to use some of the global
+        ; registers (which are all used by system stuff in general_define.src)
+        ; 'counter' will hold color and tile data
+
+        ; Read this scanline color and store it in 'counter4'
+        MIREAD counter3, joystick1, counter4    ; 7
+        inc joystick1    ; 1
+        ; check if this scanline color is controlled by RAM instead of ROM
+        mov counter, M    ; 2
+        jnb counter.0, skip_color_ram ; 4
+        ; yes: fetch value in RAM register
+        mov FSR, counter4    ; 0 (included in jnb)
+        mov counter4, IND    ; 2 'counter4' now holds the default color for this tile line
+        jmp skip_color_ram_continue    ; 3
+skip_color_ram
+        nop    ; 1
+        nop    ; 1
+        jmp skip_color_ram_continue    ; 3
+
+skip_color_ram_continue
+        ; Register RAM from $60 to $87 will hold 40 bytes of data:
+        ; First byte is the color, second byte is the tile bitmap (1-bit per pixel)
+        mov FSR, #$60    ; 2
+
+        ; 'counter2' will be the 'tile_horiz_count'
+        mov counter2, #20    ; Not counted because of djnz below
+next_tile_build
+        ; Fetch the desired tile number (counter) in ROM page $0E or $0F and store in temp W
+        mov M, counter3        ; 2
+        mov W, joystick1    ; 1
+        iread            ; 4
+        ; W now holds the starting line of the desired tile
+        ; M now holds the ROM page of this tile ($B00..$D00)
+        ; Add the scanline offset (joystick2) telling which of the 8 lines we are displaying
+        add W, joystick2        ; 1
+        ; Fetch the selected tile bitmap data W and output in INDirect register
+        iread            ; 4
+        mov IND, W        ; 1 Store tile bitmap data
+        inc FSR            ; 1
+        mov IND, counter4     ; 2 Then store color data
+        inc FSR            ; 1
+
+        inc joystick1    ; 1
+        djnz counter2, next_tile_build ; 4
+        ; Total: 22 clocks per tile, 20 tile
+
+        DELAY(504-22*20-21-40-4)    ; Delay for remaining overscan clocks (40 clocks are already been spent)
+
+        call @PREPARE_VIDEO_HORIZ    ; 4 Prepare required video signal for a scanline
+
+        mov FSR, #$20    ; 2
+        ; Start of left-side overscan, 504 free clocks
+        mov RE, overscan_color    ; 2
+        ; Here we have a couple of tasks to perform:
+        ; Display score
+        ; Change color of eaten pellets
+        ; Manage where are the sprites
+
+        ; Score. The score is displayed on tile line 1 and uses 5 tiles (max: 65535 with 0) 655350
+        jmp @page_400 ;4
+        ;DELAY(504-4-4-4-10) ; This means all path in page_400 must spend exactly 482 clocks
+
+return_from_400
+        mov FSR, #$20 ;2
+        mov joystick2, joystick2_back ; 2 Restore backup of global reg
+        mov joystick1, joystick_back ; 2 Restore backup of global reg
+        mov counter2, counter2_back ; 2 Restore backup of global reg
+        mov counter3, counter3_back ; 2 Restore backup of global reg
+
+        ; The real scanline drawing starts here
+        ; Restart RAM to first tile
+        mov FSR, #$60    ; 2
+
+DELAY(400) ; trying higher horizontal resolution (centered) instead of full screen stretched
+
+        mov counter2, #20    ; Not counted because of djnz below
+draw_next_tile
+        inc FSR ; 1 Go fetch the color
+        mov counter4, IND ; 2
+        dec FSR ; 1 Go back to the tile bitmap
+
+        ; 'IND' now refer to the current tile to draw
+; Output 8 pixels, 20 clocks each
+; try 15 clocks each instead
+        REPT 8
+            mov W, #BLACK    ;1
+            snb IND.7 ;2
+            mov W, counter4    ; Not counted
+            mov RE, W    ;1
+            rl IND    ;1
+            IF (!(%=8))    ; Don't delay the last pixel
+                ; Spare-time!
+                iread    ;4
+;iread    ;4
+;iread    ;4
+;jmp $+1  ;3
+                jmp $+1 ;3
+                jmp $+1 ;3
+            ENDIF
+        ENDR
+
+        add FSR, #2    ; 2
+
+; Spare-time: Spend remaining clocks
+;DELAY(15-10)
+
+        djnz counter2, draw_next_tile ; 4
+
+        mov FSR, #$20            ; 2 Restore normal bank
+
+                        ; Now display the right overscan
+        mov RE, overscan_color        ; 2 Set current color to the current 'overscan_color'
+
+; we now have 8*20 = 160 * (20-15) = 800 clocks to kill on each side
+        DELAY(400)
+
+        sub joystick1, #21        ; 2
+
+        inc joystick2            ; 1
+
+        ; Complex cycle calculation here
+        ; ----------- BEGIN ----------
+        ; We need to make sure every code path takes exactly the same number of cycle
+        ; or else we'll get a jaggy or wavy video signal
+        cjb joystick2, #08, skip_text_scan ; 4
+        clr joystick2            ; 0 (from cjb)
+        ; subtotal clock = 10
+
+        add joystick1, #21        ; 2
+        inc vertical_tile_counter    ; 1
+        ; If joystick1 reaches 252, we have finished 12 lines, switch to the other tile page
+        cjne joystick1, #252, skip_page_swap ; 4
+        clr joystick1            ; 0 (1 is included in cjne)
+        mov counter3, #$0F        ; 2
+        jmp resume_overscan_delay    ; 3
+
+skip_page_swap
+        DELAY(2)
+        jmp resume_overscan_delay    ; 3
+skip_text_scan
+        DELAY(3+4+2)            ; 9
+        jmp resume_overscan_delay    ; 3
+
+resume_overscan_delay
+        ; We have spent 10+12+7 clocks out of 40
+        DELAY(40-10-12-7)        ; Draw 40 clocks of horizontal
+        ; ------------- END -------------
+
+        inc scanline ; 1
+        cjb scanline, #SCREEN_HEIGHT, Raster_Loop1 ; 4/6
+        DELAY(6-4)
+        ;djnz scanline, Raster_Loop1    ; 4 Loop for the next scanline
+
+        ; The current frame is finished, starts the vsync process
+        STARTVBL
+        ; Here we have about 20,000 cpu cycles to perform anything.
+        ; After, we'll simply use the macro ENDVBL to perform vsync preparation for
+        ; the next frame.
+        ; If you spend more than 20,000 cycles before calling ENDVBL, the TV may
+        ; go berseck and lose syncronisation, resulting in a flickering display.
+
+        ; page_200 trick: this clunky trick is to prevent involuntary jumps
+        ; between a page boundary.
+        jmp @page_200
+
+        org $200
+        FETCH_TILE_CALL MACRO x, y
+            mov counter, x
+            mov counter2, y
+            call @fetch_tile
+        ENDM
+        ; This function must preserve counter3, counter4 and joystick1
+fetch_tile
+        mov FSR, #$20
+        ; current tile address = $E00 + (counter2/8) * 21 + (counter/8) + 1
+        mov counter3_back, counter3 ; backup global register
+        mov counter2_back, counter4 ; backup global register
+
+        ; if counter2 > 96 (row 12+), use $F00 instead
+        mov joystick2, #$0E
+        cjb counter2, #96, :address_ok
+        sub counter2, #96
+        mov joystick2, #$0F
+:address_ok
+        ; divide counter2 by 8 and multiply by 21
+        rr counter2
+        rr counter2
+        rr counter2
+        and counter2, #%00011111
+        mov W, counter2
+        clc
+        rl counter2
+        rl counter2
+        add W, counter2
+        rl counter2
+        rl counter2
+        add counter2, W
+
+        ; now take counter and divide by 8
+        rr counter
+        rr counter
+        rr counter
+        and counter, #%00011111
+
+        ;now iterate from the first tile in that row up (counter2) up to tile 'counter'
+        ;and counter the number of pellet
+        inc counter2 ; add 1 (to skip the color at the start of each tile row)
+        clr counter4 ; bit counter for pellets
+        inc counter ; include the last tile
+
+:loop_count_pellet
+        mov M, joystick2
+        mov W, counter2
+        iread
+        mov counter3, W
+        cje counter3, #136, :pellet_count
+        cjne counter3, #144, :skip_pellet_count
+:pellet_count
+        inc counter4 ; we found a pellet, count it
+:skip_pellet_count
+        inc counter2 ; advance to next tile
+        djnz counter, :loop_count_pellet
+
+        mov counter2, counter4
+        mov counter, counter3
+
+        mov counter3, counter3_back ; restore global register
+        mov counter4, counter2_back ; restore global register
+
+        ; tile fetched is in counter.
+        ; pellet count up to current position in counter2
+        ; Be warned that 'W' warp at 256 (32 tiles, 8 bytes each))
+        ; So tile 0 (empty space): W = 0
+        ; tile 49 (eatable pellet): W = 136 (49-32)*8
+        ; tile 50 (power pill): W = 144 (50-32)
+        ; tile 51 (ghost door): W = 152 (51-32)
+        ; all other value are walls
+        retp
+
+page_200
+        page $                ; Set the new page
+
+        READ_JOYSTICKS            ; Read both joystick status
+        ; joystick info: when a bit is 0 (low), the function is pressed
+        ; bit 0: joy_up
+        ; bit 1: joy_down
+        ; bit 2: joy_left
+        ; bit 3: joy_right
+        ; bit 4: joy_button
+
+        mov W, game_state
+        jmp PC+W
+
+        jmp game_state0
+        jmp game_state1
+        jmp game_state2
+        jmp game_state3
+        jmp game_state4
+        ; other game_states here..
+
+; Game_state0 -------------------- Waiting for start button
+game_state0
+        jb joystick1.4, game_state0_skip_joy_button ; If joy_button is pressed, start game
+
+        mov FSR, #$40
+        ; set score to 00000
+        mov W, #1*8
+        mov score_1, W
+        mov score_10, W
+        mov score_100, W
+        mov score_1000, W
+        mov score_10000, W
+
+        mov FSR, #$20
+        mov level_color, #231    ; Restore first level color
+        mov life_count, #5
+
+game_restart
+        ; turn on all pellets
+        mov FSR, #$90
+        mov counter, #(19*2) ; (19 rows, 2 bytes per row)
+        mov W, #$FF
+:fill_pellet
+        mov IND, W
+        inc FSR
+        djnz counter, :fill_pellet
+
+        mov FSR, #$40
+        clr level_pellet_count
+life_restart
+        ; set sprites start pos
+        mov FSR, #$30
+        mov pac_x, #76
+mov pac_y, #160
+;mov pac_y, #32 ; start a top (for debugging)
+        mov pac_frame, #(23*8) ; start with pac facing left
+
+        mov ghost1_x, #76
+        mov ghost1_y, #96
+        mov ghost1_color, #87
+
+        mov ghost2_x, #72
+        mov ghost2_y, #104
+        mov ghost2_color, #168
+
+        mov ghost3_x, #80
+        mov ghost3_y, #104
+        mov ghost3_color, #231
+
+        mov ghost_frame, #(25*8)
+
+        mov FSR, #$20
+        mov game_state, #1 ; transit to game state 1
+        mov blink_start, #BLACK ; turn off blinking message
+        clr frame_counter
+
+        mov FSR, #$50
+        mov W, #3
+        mov pac_direction, W
+        mov pac_prev_dir, W
+        ;mov ghost1_direction, W
+        mov ghost1_prev_dir, W
+        ;mov ghost2_direction, W
+        mov ghost2_prev_dir, W
+        ;mov ghost3_direction, W
+        mov ghost3_prev_dir, W
+        clr power_pill_active
+        jmp end_of_game_state
+
+game_state0_skip_joy_button
+        ; Make the 'push start button' blinks
+        mov FSR, #$20
+
+        mov W, #BLACK
+        sb frame_counter.5
+        mov W, #9 ; yellow
+        mov blink_start, W
+
+        jmp end_of_game_state
+; Game_state0 -------------------- end
+
+
+; Game_state1 -------------------- Intro music (delay for now)
+game_state1
+        mov FSR, #$20
+        cjb frame_counter, #60, end_of_game_state
+
+        mov game_state, #2 ; transit to game state 2
+        ; init frame_counter with pseudo-random value (use score_1)
+        mov FSR, #$40
+        mov counter, score_1
+        mov FSR, #$20
+        mov frame_counter, counter
+        jmp end_of_game_state
+; Game_state1 -------------------- end
+
+
+; Game_state2 -------------------- Normal game play
+game_state2
+        ; Read joystick input and store result in pac_direction
+        mov FSR, #$50
+
+        jb joystick1.0, :skip_joy_up
+        mov pac_direction, #4
+:skip_joy_up
+        jb joystick1.1, :skip_joy_down
+        mov pac_direction, #2
+:skip_joy_down
+        jb joystick1.2, :skip_joy_left
+        mov pac_direction, #3
+:skip_joy_left
+        jb joystick1.3, :skip_joy_right
+        mov pac_direction, #1
+:skip_joy_right
+
+        ; Process ghosts
+        jmp @ghost_update
+return_after_ghost
+
+        ; Prepare parameters for movement evaluation
+        ; Pass in all pac params (direction, prev_dir, x, y)
+        mov FSR, #$30
+        mov sprite_x, pac_x
+        mov sprite_y, pac_y
+
+        mov FSR, #$50
+        mov temp_direction, pac_direction
+        mov temp_prev_dir, pac_prev_dir
+        clr temp_is_ghost ; pac is not a ghost
+        call @calculate_movement
+        ; Now store all result back into pac variables
+        mov pac_direction, temp_direction
+        mov pac_prev_dir, temp_prev_dir
+        mov FSR, #$30
+        mov W, sprite_x
+        mov pac_x, W
+        mov counter, W
+        mov W, sprite_y
+        mov pac_y, W
+        mov counter2, W
+
+        ; now we need to find which pellet bit to eat
+        ; Tricky thing since pellet are packed into a irregular bit storage, 2 byte per row
+        ; Add (4,4) to (pac_x, pac_y) after fetch the tile underneath
+        add counter, #4
+        add counter2, #4
+        mov counter3, counter2
+        call @fetch_tile
+        ; return values:
+        ;   counter = the current tile
+        ;   counter2 = bit count of pellet starting at 1
+        cje counter, #136, :pellet_ok
+        cjne counter, #144, :pellet_done
+:pellet_ok
+        ; find current pellet row (starts at $90, 2 bytes per row, skipping the first 4 lines)
+        ; take (pac_y+4)/8 * 2 + ($90 - 4*2)
+        rr counter3
+        rr counter3
+        and counter3, #%00111110
+        add counter3, #($90-4*2)
+
+        ; if counter2 is for bit < 9 (1..8), use first byte. Else use second byte
+        cjb counter2, #9, :pellet_offset
+        inc counter3
+        sub counter2, #8 ; bring bit number back to (1..8)
+:pellet_offset
+        mov FSR, counter3
+        ; now we need to check if the bit #'counter2' in IND is ON
+        stc
+        clr counter3
+:rotate_pellet_bit
+        rr counter3
+        djnz counter2, :rotate_pellet_bit
+        ; counter3 now is a bit mask with our pellet bit (i.e.: %00100000)
+        mov W, IND
+        and W, counter3
+        jz :pellet_done ; if result is 0, this pellet has already been eaten. Skip
+        ; Now invert the bit mask to eat this pellet
+        not counter3
+        and IND, counter3
+
+        ; Check if it's a simple pellet (10 points) or a power-pill (50 points)
+        mov counter2, counter
+        mov counter, #1
+        cje counter2, #136, :simple_pellet
+
+;=========== Do something here for power-pill ================
+        mov FSR, #$50
+        mov power_pill_active, #POWER_PILL_TIME
+        FLIP_DIRECTION MACRO GHOSTDIR
+            inc GHOSTDIR
+            and GHOSTDIR, #%00000011
+            inc GHOSTDIR
+        ENDM
+        FLIP_DIRECTION ghost1_prev_dir
+        FLIP_DIRECTION ghost2_prev_dir
+        FLIP_DIRECTION ghost3_prev_dir
+        mov counter, #5
+:simple_pellet
+        call @add_score
+
+        call @play_sound
+
+        ; Check for level finish (when eating exactly 132 pellets)
+        inc level_pellet_count
+        cjb level_pellet_count, #132, :pellet_done
+        ; Transit to 'end of level gamestate'
+        mov FSR, #$20
+        mov level_color_bac, level_color
+        mov game_state, #3 ; transit to game state 3
+        clr frame_counter
+:pellet_done
+        call @background_sound
+        mov FSR, #$20
+        mov W, frame_counter ; update power pill at 1/8 framerate
+        and W, #%00000111
+        jnz end_of_game_state
+        mov FSR, #$50
+        ; check if a power-pill is in progress
+        cje power_pill_active, #0, end_of_game_state
+        dec power_pill_active
+        jz end_of_game_state
+
+        mov counter, power_pill_active
+
+        mov FSR, #$30 ; Turn 3 ghosts blue
+        mov W, #234
+        mov ghost1_color, W
+        mov ghost2_color, W
+        mov ghost3_color, W
+
+        ; make the ghost flicker when the delay is about to finish
+        cja counter, #10, end_of_game_state
+        jnb counter.0, end_of_game_state
+        mov FSR, #$30 ; Restore 3 ghosts color
+        mov ghost1_color, #87
+        mov ghost2_color, #168
+        mov ghost3_color, #231
+        jmp end_of_game_state
+; Game_state2 -------------------- end
+
+
+; Game_state3 -------------------- End of Level, 3 seconds delay
+game_state3
+        mov FSR, #$20
+        mov level_color, #231
+        jnb frame_counter.5, :level_color_flash
+        mov level_color, #102
+:level_color_flash
+        cjb frame_counter, #180, end_of_game_state
+        mov W, #48
+        add W, level_color_bac
+        mov level_color, W ; new level color (test)
+        ; Jump into game_state0 to re-initialise the level
+        ; This will also transit back to game_state1 (intro) then game_state2 (gameplay)
+        jmp game_restart
+; Game_state3 -------------------- end
+
+
+; Game_state4 -------------------- We are dead
+game_state4
+        mov FSR, #$20
+        mov counter, frame_counter
+        cjne counter, #200, :skip_dead_end
+
+        ; Jump into game_state0 to restart a new life (if at least 1 life left)
+        ; This will also transit back to game_state1 (intro) then game_state2 (gameplay)
+        cja life_count, #0, life_restart
+        ; We are game over: Return to state 0
+        mov game_state, #0
+        ; Keep the high score here if the current score is higher
+        mov FSR, #$40
+        cja score_10000, high_score_10000, :keep_high_score
+        cjb score_10000, high_score_10000, end_of_game_state
+
+        cja score_1000, high_score_1000, :keep_high_score
+        cjb score_1000, high_score_1000, end_of_game_state
+        cja score_100, high_score_100, :keep_high_score
+        cjb score_100, high_score_100, end_of_game_state
+
+        cja score_10, high_score_10, :keep_high_score
+        cjb score_10, high_score_10, end_of_game_state
+
+        cjb score_1, high_score_1, end_of_game_state
+:keep_high_score
+        mov high_score_1, score_1
+        mov high_score_10, score_10
+        mov high_score_100, score_100
+        mov high_score_1000, score_1000
+        mov high_score_10000, score_10000
+        jmp end_of_game_state
+
+:skip_dead_end
+        mov FSR, #$30
+        cjb counter, #60, :skip_pac_explode
+        mov pac_frame, #29*8
+:skip_pac_explode
+        mov ghost_frame, #25*8
+        jb counter.2, :ghost_animation
+        mov ghost_frame, #26*8
+:ghost_animation
+        jmp end_of_game_state
+; Game_state4 -------------------- end
+
+
+end_of_game_state
+        mov FSR, #$20
+        inc frame_counter
+
+        ; We are done, now wait for the remaining time to finish this video frame
+        ; and prepare overscan (bottom and top) for the next!
+        ENDVBL
+
+        jmp @Begin_Raster        ; Loop back for the next frame
+
+        DRAW_SPRITE MACRO x, y, color, tile
+            mov FSR, #$20 ; 2
+            mov joystick2, scanline ; 2
+            mov FSR, #$30 ;2
+            mov sprite_x, x ;2
+            mov sprite_y, y ;2
+            mov counter2, color ;2
+            mov counter3, tile ;2
+            call @sprite_draw ;4
+        ENDM ; total: 20 + SPRITE_DRAW_CLOCK
+        SPRITE_DELAY equ 13
+        SPRITE_DRAW_CLOCK equ (40 + SPRITE_DELAY + 7 + 3)
+        SPRITE_CLOCK equ (20 + SPRITE_DRAW_CLOCK)
+        ; Total to draw a sprite: 83 clocks
+
+        org $400
+page_400
+        ; We have 482 clocks to spend for each control path
+        ; Available global register: 'counter' and 'counter4'
+        mov joystick2_back, joystick2 ; 2 Keep a backup of global reg
+        mov joystick_back, joystick1 ; 2 Keep a backup of global reg
+        mov counter2_back, counter2 ; 2 Keep a backup of global reg
+        mov counter3_back, counter3 ; 2 Keep a backup of global reg
+
+        mov counter,vertical_tile_counter    ; 2
+        clc ; 1
+        rl counter ; 1  ; Multiply by 2 since each 'jmp @' takes 2 instructions
+        mov W,counter    ; 1
+        jmp PC+W    ; 3
+        ; jump table, jmp@ takes 4
+        jmp @line_0
+        jmp @score_line
+        jmp @line_0
+        jmp @line_0
+        jmp @line_4
+        jmp @line_5
+        jmp @line_6
+        jmp @line_7
+        jmp @line_8
+        jmp @line_9
+        jmp @line_10
+        jmp @line_11
+        jmp @line_12
+        jmp @line_13
+        jmp @line_14
+        jmp @line_15
+        jmp @line_16
+        jmp @line_17
+        jmp @line_18
+        jmp @line_19
+        jmp @line_20
+        jmp @line_0
+        jmp @line_0
+        jmp @line_23
+
+        DELAY400 equ 482-24-(SPRITE_CLOCK*4)-4
+
+; the worst line (16 pellets) takes 107 clocks
+; 482-24-4 = 454 clocks - 107 = 347
+; 83 clocks per sprite, so: 347/83 = 4 maximum sprites possible
+; (1 pac + 3 ghosts)
+
+continue_after_400
+        DRAW_SPRITE pac_x, pac_y, #9, pac_frame ;yellow
+        DRAW_SPRITE ghost1_x, ghost1_y, ghost1_color, ghost_frame ;red
+        DRAW_SPRITE ghost2_x, ghost2_y, ghost2_color, ghost_frame ; purple
+        DRAW_SPRITE ghost3_x, ghost3_y, ghost3_color, ghost_frame ; blue
+        jmp @return_from_400 ; 4
+
+
+line_0        ; Nothing to do, just wait and leave
+        DELAY(DELAY400)
+        jmp @continue_after_400        ; 4
+
+        SET_TILE_COLOR MACRO
+            REPT \0
+                mov FSR, #($61 + (\%)*2) ; 2
+                mov W, #BLACK ; 1
+                IF(% <= 8) ; Bit 0..7 are taken from 'counter'
+                    snb counter.(8-%) ; 2
+                ELSE ; and bit 8..15 are from 'counter4'
+                    snb counter4.(16-%) ; 2
+                ENDIF
+                mov W, #WHITE ; 0 (by snb)
+                mov IND, W ; 1
+            ENDR
+        ENDM ; Total: 6 clocks
+
+        SET_PELLET_OFFSET MACRO offset
+            mov FSR, #offset ; 2
+            mov counter, IND ; 2
+            inc FSR ; 1
+            mov counter4, IND ; 2
+        ENDM
+line_4
+        SET_PELLET_OFFSET $90 ; 7
+        DELAY(4)
+line_4_common
+        SET_TILE_COLOR 1,2,3,4,6,7,8,9,10,11,12,13,15,16,17,18 ; 16 pellets
+
+        DELAY(DELAY400-7-4-(16*6))
+        jmp @continue_after_400        ; 4
+
+line_17
+        SET_PELLET_OFFSET $AA ; 7
+        jmp @line_4_common ; 4 Re-use the same code as line 4
+
+line_5
+        SET_PELLET_OFFSET $92 ; 7
+        DELAY(4)
+line_5_common
+        mov FSR, #$20 ; 2
+        sb frame_counter.4 ; 2
+        clrb counter.7 ; 0 ('sb')
+        sb frame_counter.4 ; 2
+        clrb counter.2 ; 0 ('sb')
+line_5_common_part2
+        SET_TILE_COLOR 1,4,6,13,15,18 ; 6 pellets
+
+        DELAY(DELAY400-7-4-6-(6*6))
+        jmp @continue_after_400        ; 4
+
+line_19
+        SET_PELLET_OFFSET $AE ; 7
+        jmp @line_5_common        ; 4
+
+line_18
+        SET_PELLET_OFFSET $AC ; 7
+        DELAY(6)
+        jmp @line_5_common_part2        ; 4
+
+line_6
+        SET_PELLET_OFFSET $94 ; 7
+        SET_TILE_COLOR 1,2,3,4,5,6,13,14,15,16,17,18 ; 12 pellets
+
+        DELAY(DELAY400-7-(12*6))
+        jmp @continue_after_400        ; 4
+
+line_7
+        SET_PELLET_OFFSET $96 ; 7
+        SET_TILE_COLOR 3,6,7,8,9,10,11,12,13,16 ; 10 pellets
+
+        DELAY(DELAY400-7-(10*6))
+        jmp @continue_after_400        ; 4
+
+line_8
+        SET_PELLET_OFFSET $98 ; 7
+        DELAY(4)
+line_8_common
+        SET_TILE_COLOR 3,7,12,16 ; 4 pellets
+
+        DELAY(DELAY400-7-4-(4*6))
+        jmp @continue_after_400        ; 4
+
+line_9
+        SET_PELLET_OFFSET $9A ; 7
+        jmp @line_8_common
+
+line_10
+        SET_PELLET_OFFSET $9C ; 7
+        DELAY(4)
+line_10_common
+        SET_TILE_COLOR 3,4,5,6,13,14,15,16 ; 8 pellets
+
+        DELAY(DELAY400-7-4-(8*6))
+        jmp @continue_after_400        ; 4
+
+line_15
+        SET_PELLET_OFFSET $A6 ; 7
+        jmp @line_10_common
+
+line_11
+        SET_PELLET_OFFSET $9E ; 7
+        SET_TILE_COLOR 3,16 ; 2 pellets
+
+        DELAY(DELAY400-7-(2*6))
+        jmp @continue_after_400        ; 4
+
+line_12
+        SET_PELLET_OFFSET $A0 ; 7
+        SET_TILE_COLOR 3,5,6,13,14,16 ; 6 pellets
+
+        DELAY(DELAY400-7-(6*6))
+        jmp @continue_after_400        ; 4
+
+line_13
+        SET_PELLET_OFFSET $A2 ; 7
+        SET_TILE_COLOR 3,4,5,14,15,16 ; 6 pellets
+
+        DELAY(DELAY400-7-(6*6))
+        jmp @continue_after_400        ; 4
+
+line_14
+        SET_PELLET_OFFSET $A4 ; 7
+        SET_TILE_COLOR 3,16 ; 2 pellets
+
+        DELAY(DELAY400-7-(2*6))
+        jmp @continue_after_400        ; 4
+
+line_16
+        SET_PELLET_OFFSET $A8 ; 7
+        SET_TILE_COLOR 3,8,11,16 ; 4 pellets
+
+        DELAY(DELAY400-7-(4*6))
+        jmp @continue_after_400        ; 4
+
+line_20
+        SET_PELLET_OFFSET $B0 ; 7
+        SET_TILE_COLOR 1,2,3,4,5,6,7,8,11,12,13,14,15,16,17,18 ; 16 pellets
+
+        DELAY(DELAY400-7-(16*6))
+        jmp @continue_after_400        ; 4
+
+score_line
+        DRAW_SCORE MACRO score_var, tile_offset
+            mov FSR, #$40    ; 2
+            mov counter, score_var    ; 2
+            mov FSR, #($60 + tile_offset*2)    ; 2
+            mov M, #$0B     ;1
+            mov W, counter     ; 1
+            add W, joystick2 ; 1
+            iread         ; 4
+            mov IND, W     ; 1
+        ENDM ; Total: 14 clocks
+
+        ;DRAW_SCORE score_1,4
+        ;DRAW_SCORE score_10, 3
+        ;DRAW_SCORE score_100, 2
+        ;DRAW_SCORE score_1000, 1
+        ;DRAW_SCORE score_10000, 0
+
+        ;DRAW_SCORE high_score_1,16
+        ;DRAW_SCORE high_score_10, 15
+        ;DRAW_SCORE high_score_100, 14
+        ;DRAW_SCORE high_score_1000, 13
+        ;DRAW_SCORE high_score_10000, 12
+
+        mov counter2, #5 ; 0 (djnz)
+:score_next_character
+        ; display one digit of score
+        mov FSR, #($40-1)    ; 2
+        add FSR, counter2    ; 2
+        mov counter, IND    ; 2
+        mov FSR, #($60+2*5)    ; 2
+        mov W, counter2 ; 1
+        sub FSR, W ; 1
+        sub FSR, W ; 1
+        mov M, #$0B     ;1
+        mov W, counter     ; 1
+        add W, joystick2 ; 1
+        iread         ; 4
+        mov IND, W     ; 1
+        ; total: 19
+
+        ; display one digit of high score
+        mov FSR, #($45-1)    ; 2
+        add FSR, counter2    ; 2
+        mov counter, IND    ; 2
+        mov FSR, #($78+2*5)    ; 2
+        mov W, counter2 ; 1
+        sub FSR, W ; 1
+        sub FSR, W ; 1
+        mov M, #$0B     ;1
+        mov W, counter     ; 1
+        add W, joystick2 ; 1
+        iread         ; 4
+        mov IND, W     ; 1
+        ; total: 19
+
+        djnz counter2, :score_next_character ; 4
+
+        ; Since we are not drawing sprite on this tile line, we have
+        ; (SPRITE_CLOCK*4) more clocks to spend
+        DELAY((DELAY400)+(SPRITE_CLOCK*4)-((19+19+4)*5))
+        jmp @return_from_400
+org $815
+ghost_process_move
+        jmp ghost_process_move_far
+
+; --------- Calculate movement procedure --------
+; This proc will always (impolitely) set the pac animation frame
+; So update all ghosts, then update pac in order to have a correct animation
+calculate_movement
+        mov temp_try_dir, temp_direction
+        ; try the current desired direction (temp_direction)
+        ; if it works, switch to this direction.
+        ; else, continue using last direction (temp_prev_dir)
+        ; if it is blocked, then stops and wait for a new direction
+
+        ; set default pac frame to idle pose
+        mov FSR, #$30
+        mov pac_frame, #(20*8)
+
+        ; test if we have reached a leftside teleporter
+        cjne sprite_x, #0, :skip_left_teleporter_flip
+        mov sprite_x, #151
+        mov FSR, #$50
+        mov temp_prev_dir, #3
+        retp
+
+:skip_left_teleporter_flip
+        ; now test we rightside teleporter
+        cjne sprite_x, #152, :skip_right_teleporter_flip
+        mov sprite_x, #1
+        mov FSR, #$50
+        mov temp_prev_dir, #1
+        retp
+:skip_right_teleporter_flip
+:try_direction_move
+        mov FSR, #$30
+        mov counter, sprite_x
+        mov counter2, sprite_y
+        mov counter3, sprite_x ; future position
+        mov counter4, sprite_y ; future position
+
+        mov FSR, #$50
+        and counter4, #%00000111 ; Check if we are perfectly aligned vertically
+        jz :do_horizontal_test
+        cje temp_try_dir, #1, :no_move
+        cje temp_try_dir, #3, :no_move
+        jmp :skip_horizontal_test
+
+:do_horizontal_test
+        cjne temp_try_dir, #1, :skip_dir_right
+        add counter, #8 ; check tile on the right
+        inc counter3 ; go right
+        mov counter4, counter2 ; restore y pos
+        mov joystick1, #(21*8)
+        jmp :skip_direction_change
+:skip_dir_right
+        cjne temp_try_dir, #3, :skip_dir_left
+        sub counter, #1 ; check tile on the left
+        dec counter3 ; go left
+        mov counter4, counter2 ; restore y pos
+        mov joystick1, #(23*8)
+        jmp :skip_direction_change
+:skip_dir_left
+
+:skip_horizontal_test
+        mov counter4, counter2 ; restore y pos
+        and counter3, #%00000111 ; Check if we are perfectly aligned horizontally
+        jz :do_vertical_test
+        cje temp_try_dir, #2, :no_move
+        cje temp_try_dir, #4, :no_move
+        jmp :skip_vertical_test
+
+:do_vertical_test
+        cjne temp_try_dir, #2, :skip_dir_down
+        add counter2, #8 ; check tile below
+        inc counter4 ; go down
+        mov joystick1, #(22*8)
+        jmp :skip_vertical_test
+:skip_dir_down
+        cjne temp_try_dir, #4, :skip_vertical_test
+        sub counter2, #1 ; check tile above
+        dec counter4 ; go up
+        mov joystick1, #(24*8)
+:skip_vertical_test
+        mov counter3, counter ; restore x pos
+
+:skip_direction_change
+        call @fetch_tile
+        cje counter, #0, :move_ok ; Free tile: Move OK
+        cje counter, #136, :move_ok ; Pellet tile: Move OK
+        cje counter, #144, :move_ok ; Power pill tile: Move OK
+        mov FSR, #$50 ; Now check if this object is a ghost
+        cje temp_is_ghost, #0, :no_move ; Not a ghost, Move rejected
+        cja power_pill_active, #0, :no_move ; if a power pill is in progress, ghost stay in the house
+        cjne temp_try_dir, #4, :no_move ; Prevent ghost from re-entering their house
+        cje counter, #152, :move_ok ; Ghost door: Move OK
+        jmp :no_move
+:move_ok
+        mov FSR, #$20
+        mov counter, frame_counter ; use the global frame counter for pac animation
+
+        mov FSR, #$30
+        mov sprite_x, counter3 ; accept move
+        mov sprite_y, counter4 ; accept move
+        ; pac animation
+        mov W, pac_frame
+        sb counter.2
+        mov W, joystick1 ; 'joystick1' holds the direction frame
+        mov pac_frame, W
+        jmp :move_done
+
+:no_move
+        mov FSR, #$50
+        ; Now if the move was rejected, try using the previous direction
+        ; (if different than the direction we just tried, of course)
+        cje temp_prev_dir, temp_try_dir, :move_cancelled
+        mov temp_try_dir, temp_prev_dir
+        jmp :try_direction_move
+
+:move_cancelled
+        ; clear direction to indicate move was rejected
+        clr temp_try_dir
+        retp
+
+:move_done
+        mov FSR, #$50
+        mov temp_prev_dir, temp_try_dir ; Set the new direction
+        retp
+; ------------ Calculate_movement proc end ------------
+
+; Ghost A.I. placed here (address around $816)
+ghost_update
+        ; Prepare parameters for movement evaluation
+        ; Pass in all ghost params (direction, prev_dir, x, y)
+        ; check if a power-pill is in progress
+        mov FSR, #$50
+        mov counter4, #%00000111 ; slow down ghost a little bit
+        cje power_pill_active, #0, :ghost_speed_selection
+        mov counter4, #%00000001 ; slow down ghost even more of power-pill
+        ; Invert pac pos to make the ghost flee
+        mov FSR, #$30
+;not pac_x
+;not pac_y
+:ghost_speed_selection
+        mov FSR, #$20
+        mov counter3, frame_counter
+        and W, counter4
+        jz :ghost_evaluate_animation ; Don't move ghost for this frame (to make them slow down)
+
+        GHOST_PROCESS MACRO GHOST_NUM, GHOSTX, GHOSTY, GHOSTDIR, GHOSTPREVDIR
+            mov FSR, #$50
+            mov ghost_process_dir, GHOSTDIR
+            mov ghost_process_prev_dir, GHOSTPREVDIR
+            mov temp_is_ghost, #(GHOST_NUM)
+            mov FSR, #$30
+            mov sprite_x, GHOSTX
+            mov sprite_y, GHOSTY
+            call ghost_process_move
+
+            mov FSR, #$50
+            mov GHOSTDIR, ghost_process_dir
+            mov GHOSTPREVDIR, ghost_process_prev_dir
+            mov FSR, #$30
+            mov GHOSTX, sprite_x
+            mov GHOSTY, sprite_y
+        ENDM
+
+        GHOST_PROCESS 1, ghost1_x, ghost1_y, ghost1_direction, ghost1_prev_dir
+        GHOST_PROCESS 2, ghost2_x, ghost2_y, ghost2_direction, ghost2_prev_dir
+        GHOST_PROCESS 3, ghost3_x, ghost3_y, ghost3_direction, ghost3_prev_dir
+
+:ghost_evaluate_animation
+        ; Ghost animation
+        mov FSR, #$50
+        cje power_pill_active, #0, :ghost_normal_anim
+        mov FSR, #$30
+        mov ghost_frame, #27*8
+        ; restore pac position (because we inverted it!)
+;not pac_x
+;not pac_y
+        jmp @return_after_ghost
+:ghost_normal_anim
+        mov FSR, #$20
+        mov counter, #25*8
+        jb frame_counter.3, :ghost_animation
+        mov counter, #26*8
+:ghost_animation
+        mov FSR, #$30
+        mov ghost_frame, counter
+        jmp @return_after_ghost
+
+;------------------------------------
+; Process current ghost movement
+ghost_process_move_far
+        mov FSR, #$50
+
+        ; Ghost1 tracks pac X then Y
+        cjne temp_is_ghost, #1, :test_ghost2
+
+        mov FSR, #$30
+        ; make a 'random' decision according to frame_counter
+        jb counter3.4, :ghost1_test_up
+
+        cjae sprite_x, pac_x, :ghost1_skip_right
+        mov counter2, #1
+        jmp :ghost_move_selected
+:ghost1_skip_right
+        cjbe sprite_x, pac_x, :ghost1_test_up
+        mov counter2, #3
+        jmp :ghost_move_selected
+:ghost1_test_up
+        cjae sprite_y, pac_y, :ghost1_skip_down
+        mov counter2, #2
+        jmp :ghost_move_selected
+:ghost1_skip_down
+        mov counter2, #4
+        jmp :ghost_move_selected
+
+:test_ghost2
+        ; Ghost2 tracks pac Y then X
+        cjne temp_is_ghost, #2, :test_ghost3
+
+        mov FSR, #$30
+        ; make a 'random' decision according to frame_counter
+        jb counter3.4, :ghost2_test_up
+
+        cjae sprite_y, pac_y, :ghost2_skip_right
+        mov counter2, #2
+        jmp :ghost_move_selected
+:ghost2_skip_right
+        cjbe sprite_y, pac_y, :ghost2_test_up
+        mov counter2, #4
+        jmp :ghost_move_selected
+:ghost2_test_up
+        cjae sprite_x, pac_x, :ghost2_skip_down
+        mov counter2, #1
+        jmp :ghost_move_selected
+:ghost2_skip_down
+        mov counter2, #3
+        jmp :ghost_move_selected
+
+:test_ghost3
+        mov FSR, #$30
+        ; Ghost3 tracks pac X then Y (inverted)
+        cjae sprite_x, pac_x, :ghost3_skip_right
+        mov counter2, #1
+        jmp :ghost_move_selected
+:ghost3_skip_right
+        cjbe sprite_x, pac_x, :ghost3_test_up
+        mov counter2, #3
+        jmp :ghost_move_selected
+:ghost3_test_up
+        cjbe sprite_y, pac_y, :ghost3_skip_down
+        mov counter2, #2
+        jmp :ghost_move_selected
+:ghost3_skip_down
+        mov counter2, #4
+
+:ghost_move_selected
+        mov FSR, #$50
+        mov ghost_process_dir, counter2
+
+:ghost_retry_move
+        ; Reject all u-turn
+        mov counter, ghost_process_dir
+        sub counter, ghost_process_prev_dir
+        cje counter, #2, :ghost_try_new_direction
+        cjne counter, #-2, :ghost_test_move
+:ghost_try_new_direction
+        inc ghost_process_dir
+        cjbe ghost_process_dir, #4, :ghost_retry_move
+        mov ghost_process_dir, #1
+        jmp :ghost_retry_move
+
+:ghost_test_move
+        mov temp_direction, ghost_process_dir
+        mov temp_prev_dir, ghost_process_prev_dir
+        call @calculate_movement
+        ; if temp_try_dir is 0, the requested move (and the previous direction) has both
+        ; been rejected. We need to try another path
+        cje temp_try_dir, #0, :ghost_try_new_direction
+:ghost_move_valid
+        ; Now store all result back into ghost variables
+        mov ghost_process_dir, temp_direction
+        mov ghost_process_prev_dir, temp_prev_dir
+
+        mov FSR, #$30
+        ; check for collision
+        COLLISION_SIZE equ 6
+        mov counter, pac_x
+        add counter, #COLLISION_SIZE
+        cjae sprite_x, counter, :ghost_no_collide
+        sub counter, #(COLLISION_SIZE*2)
+        cjbe sprite_x, counter, :ghost_no_collide
+        mov counter, pac_y
+        add counter, #COLLISION_SIZE
+        cjae sprite_y, counter, :ghost_no_collide
+        sub counter, #(COLLISION_SIZE*2)
+        cjbe sprite_y, counter, :ghost_no_collide
+
+        mov FSR, #$50
+        cja power_pill_active, #0, :ghost_eaten
+        ; We die here!
+        mov FSR, #$20
+        clr frame_counter
+        mov game_state, #4
+        dec life_count
+        retp
+:ghost_eaten
+        mov FSR, #$30
+        ; Collision detected
+        mov sprite_x, #76
+        mov sprite_y, #96
+
+        mov counter, #20
+        call @add_score
+
+:ghost_no_collide
+        retp
+
+; Subroutine sprite_draw: Must absolutely be at the start of a page ($000, $200, $400...)
+        org $A00
+sprite_draw
+        ; First test if this sprite is in the current scanline
+        mov W, sprite_y ;1
+        mov W, joystick2 - W ;1
+        mov joystick2, W ;1
+        ; If sprite not in scanline, we have spent 6+7 here, waste remaining clocks.
+        cjae joystick2, #8, @sprite_not_in_scanline ;5/7
+
+        mov W, sprite_x ; 1
+        mov counter, W ;1
+        mov counter4, W ;1
+        ; take 'sprite_x', divide by 8 to get tile number, then multiply back by 2
+        ; to obtain an offset in the tile-line buffer ($60 + index*2) and store in FSR
+        clc ;1
+        and counter, #%11111000 ;2
+        rr counter ;1
+        rr counter ;1
+        mov W, #$60 ; 1
+        add W,counter ; 1
+        mov FSR, W ; 1
+
+        ; now take the 0..7 pixel-precise offset inside the tile
+        and counter4, #%00000111 ; 2
+
+        mov M, #$0C ; 1
+        mov W, counter3 ; 1
+        add W, joystick2 ; 1
+        iread  ;4
+        mov IND, W ; 1
+        mov counter, W ; 1
+
+        mov W,counter4    ; 1
+
+        jmp PC+W    ; 3 + 3 + 3 (bonus: this will auto clear carry flag)
+
+        jmp sprite_0
+        jmp sprite_1
+        jmp sprite_2
+        jmp sprite_3
+        jmp sprite_4
+        jmp sprite_5
+        jmp sprite_6
+        jmp sprite_7
+
+        ; total: 40 clocks (with 3 jmps)
+        ; A sprite takes 13 clocks to draw 8 bit (on two horizontal tiles) (SPRITE_DELAY)
+sprite_0
+        ; Nothing to do, 0 means it's aligned with tile (and we don't need to touch the next tile)
+        DELAY(SPRITE_DELAY-0)
+        ; Special case: we only have 1 tile to paint/colorize
+        inc FSR ; 1
+        mov IND,counter2 ;2
+        DELAY(10-3)
+        retp ; 3
+sprite_1
+        ; scroll 1 pel right
+        and IND, #%11111110 ;2
+        rr IND ;1
+
+        add FSR, #2 ;2
+        mov IND, counter ; 2
+        and IND, #%00000001 ;2
+        rr IND ;1
+        rr IND ;1
+
+        DELAY(SPRITE_DELAY-11)
+        jmp sprite_done
+sprite_2
+        and IND, #%11111100 ;2
+        rr IND ;1
+        rr IND ;1
+
+        add FSR, #2 ;2
+        mov IND, counter ; 2
+        and IND, #%00000011 ;2
+        rr IND ;1
+        rr IND ;1
+        rr IND ;1
+
+        DELAY(SPRITE_DELAY-13)
+        jmp sprite_done
+sprite_3
+        and IND, #%11111000 ;2
+        rr IND ;1
+        rr IND ;1
+        rr IND ;1
+
+        add FSR, #2 ;2
+        mov IND, counter ; 2
+        and IND, #%00000111 ;2
+        swap IND ;1
+        rl IND ;1
+
+        DELAY(SPRITE_DELAY-13)
+        jmp sprite_done
+sprite_4
+        and IND, #%11110000 ;2
+        swap IND ;1
+
+        add FSR, #2 ;2
+        mov IND, counter ; 2
+        and IND, #%00001111 ;2
+        swap IND ;1
+
+        DELAY(SPRITE_DELAY-10)
+        jmp sprite_done
+sprite_5
+        and IND, #%11100000 ;2
+        swap IND ;1
+        rr IND ;1
+
+        add FSR, #2 ;2
+        mov IND, counter ; 2
+        and IND, #%00011111 ;2
+        rl IND ; 1
+        rl IND ; 1
+        rl IND ; 1
+
+        DELAY(SPRITE_DELAY-13)
+        jmp sprite_done
+sprite_6
+        and IND, #%11000000 ;2
+        rl IND ;1
+        rl IND ;1
+        rl IND ;1
+
+        add FSR, #2 ;2
+        mov IND, counter ; 2
+        and IND, #%00111111 ;2
+        rl IND ; 1
+        rl IND ; 1
+
+        DELAY(SPRITE_DELAY-13)
+        jmp sprite_done
+sprite_7
+        and IND, #%10000000 ;2
+        rl IND ;1
+        rl IND ;1
+
+        add FSR, #2 ;2
+        mov IND, counter ; 2
+        and IND, #%01111111 ;2
+        rl IND ; 1
+
+        DELAY(SPRITE_DELAY-11)
+        jmp sprite_done
+
+sprite_done
+        inc FSR ; 1
+        mov IND,counter2 ;2
+        sub FSR, #2 ; 2
+        mov IND,counter2 ; 2
+sprite_done_skip_color
+        ; total: 40 + SPRITE_DELAY + 7 + 3
+        retp ; 3
+
+sprite_not_in_scanline
+        DELAY(SPRITE_DRAW_CLOCK - 10 - 3)
+        retp ; 3
+
+init_sound_system
+        INITIALIZE_SOUND
+        mov joystick1,  #SND_REG_OPER
+        mov joystick2, #(SND_OPER_WAVE1_ON | SND_OPER_WAVE2_ON |SND_OPER_TNSEL_MELODY | SND_OPER_FSEL_MELODY | SND_OPER_SLEEP_OFF)
+        call @Write_Snd_Command
+
+        mov joystick1,  #SND_REG_MODE
+            mov joystick2, #(SND_MODE_WMODE_WAVE1 | SND_MODE_FLAVOR_SQUARE | SND_MODE_ENVON_ON | SND_MODE_ENVM_FAST | SND_MODE_ATTN_0_0DB )
+        call @Write_Snd_Command
+
+        mov joystick1,  #SND_REG_MODE
+            mov joystick2, #(SND_MODE_WMODE_WAVE2 | SND_MODE_FLAVOR_SINE | SND_MODE_ENVON_ON | SND_MODE_ENVM_SLOW | SND_MODE_ATTN_8_5DB )
+        call @Write_Snd_Command
+
+        mov joystick1,  #SND_REG_GAIN
+        mov joystick2, #(SND_GAIN_VOLUME_0DB)
+        call @Write_Snd_Command
+        retp
+
+play_sound
+        INITIALIZE_SOUND
+        mov joystick1,  #SND_REG_FREQ
+        mov joystick2, #(SND_FREQ_WAVE1)
+        or joystick2, #13
+        call @Write_Snd_Command
+        retp
+
+
+background_sound
+        INITIALIZE_SOUND
+        mov joystick1,  #SND_REG_FREQ
+        mov joystick2, #(SND_FREQ_WAVE2)
+        mov FSR, #$20
+        or joystick2, scfreq
+        call @Write_Snd_Command
+
+        mov FSR, #$50
+        mov counter, power_pill_active
+        mov FSR, #$20
+        cje counter, #0, :no_power_pill
+        add scfreq, #3
+        cjb scfreq, #60, :byebye
+        mov scfreq, #30
+
+:no_power_pill
+        add scfreq, #1
+        cjb scfreq, #40, :byebye
+        mov scfreq, #10
+:byebye
+        retp
+
+; Tile color data. Stored in page $B00 8x8 1-bit bitmap
+; 8 bytes per tile, 512 bytes per page, we have enough space for 96 tiles
+; Although we have to take care that tiles > 32 will be in page $0C, $0D
+; Exported from a BMP by a Perl script
+org $B00
+    dw 000,000,000,000,000,000,000,000  ; tile 0 (address: 0)
+    dw 120,204,220,236,204,204,120,000  ; tile 1 (address: 8)
+    dw 048,048,112,048,048,048,252,000  ; tile 2 (address: 16)
+    dw 120,204,012,024,096,192,252,000  ; tile 3 (address: 24)
+    dw 120,204,012,056,012,204,120,000  ; tile 4 (address: 32)
+    dw 012,028,060,204,254,012,012,000  ; tile 5 (address: 40)
+    dw 252,192,248,012,012,204,120,000  ; tile 6 (address: 48)
+    dw 120,204,192,248,204,204,120,000  ; tile 7 (address: 56)
+    dw 252,204,024,048,048,048,048,000  ; tile 8 (address: 64)
+    dw 120,204,204,120,204,204,120,000  ; tile 9 (address: 72)
+    dw 120,204,204,124,012,204,120,000  ; tile 10 (address: 80)
+    dw 048,120,204,252,204,204,204,000  ; tile 11 (address: 88)
+    dw 248,204,204,248,204,204,248,000  ; tile 12 (address: 96)
+    dw 120,204,192,192,192,204,120,000  ; tile 13 (address: 104)
+    dw 240,216,204,204,204,216,240,000  ; tile 14 (address: 112)
+    dw 252,192,192,240,192,192,252,000  ; tile 15 (address: 120)
+    dw 252,192,192,240,192,192,192,000  ; tile 16 (address: 128)
+    dw 120,204,192,220,204,204,120,000  ; tile 17 (address: 136)
+    dw 204,204,204,252,204,204,204,000  ; tile 18 (address: 144)
+    dw 120,048,048,048,048,048,120,000  ; tile 19 (address: 152)
+    dw 060,024,024,024,024,216,112,000  ; tile 20 (address: 160)
+    dw 204,216,240,224,240,216,204,000  ; tile 21 (address: 168)
+    dw 192,192,192,192,192,192,252,000  ; tile 22 (address: 176)
+    dw 198,238,254,254,198,198,198,000  ; tile 23 (address: 184)
+    dw 204,236,252,252,220,204,204,000  ; tile 24 (address: 192)
+    dw 120,204,204,204,204,204,120,000  ; tile 25 (address: 200)
+    dw 248,204,204,248,192,192,192,000  ; tile 26 (address: 208)
+    dw 120,204,204,204,204,120,028,000  ; tile 27 (address: 216)
+    dw 248,204,204,248,240,216,204,000  ; tile 28 (address: 224)
+    dw 120,204,192,120,012,204,120,000  ; tile 29 (address: 232)
+    dw 252,048,048,048,048,048,048,000  ; tile 30 (address: 240)
+    dw 204,204,204,204,204,204,120,000  ; tile 31 (address: 248)
+    dw 204,204,204,204,204,120,048,000  ; tile 32 (address: 256)
+    dw 198,198,198,214,254,238,198,000  ; tile 33 (address: 264)
+    dw 204,204,120,048,120,204,204,000  ; tile 34 (address: 272)
+    dw 204,204,204,120,048,048,048,000  ; tile 35 (address: 280)
+    dw 252,012,024,048,096,192,252,000  ; tile 36 (address: 288)
+    dw 000,000,015,016,032,035,036,036  ; tile 37 (address: 296)
+    dw 000,000,255,000,000,255,000,000  ; tile 38 (address: 304)
+    dw 000,000,240,008,004,196,036,036  ; tile 39 (address: 312)
+    dw 000,000,255,255,255,255,126,060  ; tile 40 (address: 320)
+    dw 036,036,036,036,036,036,036,036  ; tile 41 (address: 328)
+    dw 060,126,255,255,255,255,000,000  ; tile 42 (address: 336)
+    dw 000,024,060,060,060,060,060,060  ; tile 43 (address: 344)
+    dw 060,060,060,060,060,060,024,000  ; tile 44 (address: 352)
+    dw 000,000,252,254,254,252,000,000  ; tile 45 (address: 360)
+    dw 000,000,063,127,127,063,000,000  ; tile 46 (address: 368)
+    dw 060,060,063,063,031,015,000,000  ; tile 47 (address: 376)
+    dw 060,060,252,252,248,240,000,000  ; tile 48 (address: 384)
+    dw 000,000,000,024,024,000,000,000  ; tile 49 (address: 392)
+    dw 000,000,024,060,060,024,000,000  ; tile 50 (address: 400)
+    dw 000,000,000,255,255,000,000,000  ; tile 51 (address: 408)
+    dw 060,126,126,255,255,126,126,060  ; tile 52 (address: 416)
+    dw 062,124,112,224,240,120,126,060  ; tile 53 (address: 424)
+    dw 060,126,126,255,247,231,195,066  ; tile 54 (address: 432)
+    dw 060,126,030,015,007,014,062,124  ; tile 55 (address: 440)
+    dw 066,195,231,247,255,126,126,060  ; tile 56 (address: 448)
+    dw 060,126,219,219,255,255,214,146  ; tile 57 (address: 456)
+    dw 060,126,219,219,255,255,109,072  ; tile 58 (address: 464)
+    dw 060,090,153,255,213,171,255,074  ; tile 59 (address: 472)
+    dw 000,068,170,170,068,000,000,000  ; tile 60 (address: 480)
+    dw 016,016,068,000,195,000,084,016  ; tile 61 (address: 488)
+    dw 000,017,043,034,102,238,238,068  ; tile 62 (address: 496)
+    dw 000,000,000,000,000,000,000,000  ; tile 63 (address: 504)
+
+; XGS logo. Taken from Alex' mars_descent
+org $D00
+xgs_logo ; (16x8)
+    DW    WHITE,WHITE,BLACK,BLACK,BLACK,WHITE,WHITE,BLACK,WHITE,WHITE,WHITE,BLACK,WHITE,WHITE,WHITE,WHITE
+    DW    BLACK,BLACK,WHITE,BLACK,WHITE,BLACK,BLACK,WHITE,BLACK,BLACK,BLACK,BLACK,WHITE,BLACK,BLACK,BLACK
+    DW    BLACK,BLACK,BLACK,WHITE,BLACK,BLACK,BLACK,WHITE,BLACK,WHITE,WHITE,BLACK,WHITE,WHITE,WHITE,WHITE
+    DW    BLACK,BLACK,WHITE,BLACK,WHITE,BLACK,BLACK,WHITE,BLACK,BLACK,WHITE,BLACK,BLACK,BLACK,BLACK,WHITE
+    DW    WHITE,WHITE,BLACK,BLACK,BLACK,WHITE,WHITE,BLACK,WHITE,WHITE,WHITE,BLACK,WHITE,WHITE,WHITE,WHITE
+    DW    BLACK,BLACK,BLACK,BLACK,BLACK,BLACK,BLACK,BLACK,BLACK,BLACK,BLACK,BLACK,BLACK,BLACK,BLACK,BLACK
+    DW    COLOR0+4,COLOR1+4,COLOR2+4,COLOR3+4,COLOR4+4,COLOR5+4,
+    DW    COLOR6+4,COLOR7+4,COLOR8+4,COLOR9+4,COLOR10+4,COLOR11+4,COLOR12+4,COLOR13+4,COLOR14+4,COLOR14+4
+    DW    BLACK,BLACK,BLACK,BLACK,BLACK,BLACK,BLACK,BLACK,BLACK,BLACK,BLACK,BLACK,BLACK,BLACK,BLACK,BLACK
+
+xgs_logo_draw_bottom_overscan
+    ; jmp @xgs_logo_draw_bottom_overscan ; 4
+
+    ; Display XGS logo in 8 first lines of bottom overscan
+    ; Code taken from Alex' mars_decent
+    mov    counter3, #8        ; (0 djnz)
+    mov    counter4, #(xgs_logo & 255) ; (2) Offset of sprite data
+
+:xgs_logo_loop
+    ; 4208 clocks per line
+    call @PREPARE_VIDEO_HORIZ     ; 4
+
+    mov RE, overscan_color        ; ( 2 cycles ) sync
+    DELAY    ( 3044 )        ; Move to the desired position
+
+    mov    counter, #16        ; (0 djnz) Draw 16 pixels
+:xgs_pixel_loop
+    mov    M, #(xgs_logo >> 8);    ; (1) Point M:W at the XGS logo sprite
+;mov     M, W            ; 1
+nop
+    mov    W, counter4        ; (1)
+    iread                ; (4) Get the next pixel
+    mov    RE, W            ; (1) Draw the pixel color
+    inc    counter4        ; (1) Move to next pixel
+    DELAY    ( 20 - 9 - 4 )        ;     Pad the rest of the pixel
+    djnz    counter, :xgs_pixel_loop ; 4
+    ; total: 16*20 clocks
+
+    mov    RE, overscan_color    ; 2
+    DELAY    ( 4208 - 4 - 4 - 2 - 2 - 3044 - 16*20 - 2 - 4 - 4)
+
+    djnz    counter3, :xgs_logo_loop ; (4)
+    jmp @xgs_logo_draw_resume ; 4
+
+line_23
+    mov FSR, #$20 ; 2
+    mov counter, life_count ; 2
+    mov counter2, #5 ; (0 djnz)
+    mov FSR, #$61 ; 2
+    ; total: 6
+:fill_color_life
+    mov W, #BLACK ;1
+    test counter ;1
+    jz :fill_color_jump ; 4
+    dec counter ; 0 (jz)
+    mov W, #9 ; 0 (jz)
+:fill_color_jump
+    mov IND, W ; 1
+    add FSR, #2 ; 2
+    djnz counter2, :fill_color_life ; 4
+    ; total: 13
+:clear_remaining_life
+    DELAY(DELAY400-6-13*5)
+    jmp @continue_after_400
+
+; Tile-map info. Each byte represent an offset to a tile number * 8
+; Example: DEFINE_TILES 05 would use the tile #5 (which has an offset on 8*5 = 40)
+; We can only refer to 32 tiles (8*32 = 256) with this system
+; The screen is composed of 20x24 tiles (480 tiles).
+; We can access the first 12 lines with page $E00
+; and the remaining 12 lines with page $F00
+org $E00
+    dw 255
+    DEFINE_TILES 00,00,02,31,26,00,00,00,18,19,17,18,00,29,13,25,28,15,00,00 ; line 0
+    dw 253
+    DEFINE_TILES 00,00,00,00,01,01,00,00,00,00,00,00,00,00,00,00,01,01,00,00 ; line 1
+    dw blink_start+256
+    DEFINE_TILES 00,26,31,29,18,00,29,30,11,28,30,00,12,31,30,30,25,24,00,00 ; line 2
+    dw level_color+256
+    DEFINE_TILES 37,38,38,38,38,40,38,38,38,38,38,38,38,38,40,38,38,38,38,39 ; line 3
+    dw level_color+256
+    DEFINE_TILES 41,49,49,49,49,41,49,49,49,49,49,49,49,49,41,49,49,49,49,41 ; line 4
+    dw level_color+256
+    DEFINE_TILES 41,50,46,45,49,44,49,37,38,38,38,38,39,49,44,49,46,45,50,41 ; line 5
+    dw level_color+256
+    DEFINE_TILES 41,49,49,49,49,49,49,47,38,38,38,38,48,49,49,49,49,49,49,41 ; line 6
+    dw level_color+256
+    DEFINE_TILES 47,38,45,49,37,39,49,49,49,49,49,49,49,49,37,39,49,46,38,48 ; line 7
+    dw level_color+256
+    DEFINE_TILES 00,00,00,49,41,47,39,49,37,38,38,39,49,37,48,41,49,00,00,00 ; line 8
+    dw level_color+256
+    DEFINE_TILES 38,38,39,49,47,38,48,49,47,38,38,48,49,47,38,48,49,37,38,38 ; line 9
+    dw level_color+256
+    DEFINE_TILES 00,00,41,49,49,49,49,00,00,00,00,00,00,49,49,49,49,41,00,00 ; line 10
+    dw level_color+256
+    DEFINE_TILES 00,00,41,49,37,38,45,00,37,51,51,39,00,46,38,39,49,41,00,00 ; line 11
+
+; Tile lines 12..23
+;if(1=0) ; friggin' debugger
+org $F00
+    dw level_color+256
+    DEFINE_TILES 38,38,48,49,44,49,49,00,41,00,00,41,00,49,49,44,49,47,38,38 ; line 12
+    dw level_color+256
+    DEFINE_TILES 00,00,00,49,49,49,43,00,41,00,00,41,00,43,49,49,49,00,00,00 ; line 13
+    dw level_color+256
+    DEFINE_TILES 38,38,39,49,46,38,48,00,47,38,38,48,00,47,38,45,49,37,38,38 ; line 14
+    dw level_color+256
+    DEFINE_TILES 00,00,41,49,49,49,49,00,00,00,00,00,00,49,49,49,49,41,00,00 ; line 15
+    dw level_color+256
+    DEFINE_TILES 37,38,48,49,46,40,38,45,49,46,45,49,46,38,40,45,49,47,38,39 ; line 16
+    dw level_color+256
+    DEFINE_TILES 41,49,49,49,49,41,49,49,49,49,49,49,49,49,41,49,49,49,49,41 ; line 17
+    dw level_color+256
+    DEFINE_TILES 41,49,37,39,49,41,49,37,38,38,38,38,39,49,41,49,37,39,49,41 ; line 18
+    dw level_color+256
+    DEFINE_TILES 41,50,47,48,49,44,49,47,38,38,38,38,48,49,44,49,47,48,50,41 ; line 19
+    dw level_color+256
+    DEFINE_TILES 41,49,49,49,49,49,49,49,49,00,00,49,49,49,49,49,49,49,49,41 ; line 20
+    dw level_color+256
+    DEFINE_TILES 47,38,38,38,38,38,38,38,38,38,38,38,38,38,38,38,38,38,38,48 ; line 21
+    dw 255
+    DEFINE_TILES 00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00 ; line 22
+    dw BLACK
+    DEFINE_TILES 53,53,53,53,53,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00 ; line 23
+
+;endif

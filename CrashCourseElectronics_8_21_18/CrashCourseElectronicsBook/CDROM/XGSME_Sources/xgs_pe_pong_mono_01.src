@@ -1,0 +1,487 @@
+
+; *****************************************************************************
+;
+; Source Filename: XGS_PE_PONG_01.SRC 
+; Description: Pico Edition Joystick test Demo 
+; Last Modified: 1.25.2005
+;
+; Instructions:
+;
+;
+;
+;
+; *****************************************************************************
+
+; *****************************************************************************
+; Set device attributes
+; *****************************************************************************
+
+; Set device to SX28, enable external high speed oscillator
+		DEVICE 	SX28L, STACKX, OPTIONX, TURBO
+		IRC_CAL IRC_FAST
+
+		RESET	Main		; set restart vector to start of code
+		FREQ 	10_000_000
+
+; **** CONSTANTS **************************************************************
+
+; RB mode registers
+RB_DIR		EQU	$F
+
+; Timing
+CLOCK_FREQ	EQU	10_000_000		; Clocks per second
+US_CLOCKS	EQU	CLOCK_FREQ / 1_000_000	; Clocks per microsecond
+
+; NTSC Signal Voltage Levels
+LEVEL_SYNC	EQU	0
+LEVEL_BLACK	EQU	6
+LEVEL_GREY_D	EQU	8
+LEVEL_GREY_L	EQU	12
+LEVEL_WHITE	EQU	15
+
+; NTSC Scanline Counts
+SCAN_LENGTH	EQU	64			; Microsecond length of scanlines
+SCAN_RASTER	EQU	192			; Raster scanlines
+SCAN_OS_0	EQU	32			; First block of black overscan
+SCAN_OS_1	EQU	33			; Second block of black overscan
+
+; Virtual screen
+SCREEN_MAX_X	EQU	109			; 110x110
+SCREEN_MAX_Y	EQU	192
+
+; **** REGISTERS **************************************************************
+
+ORG 	$8
+
+; Registers
+t0		DS	1			; Temp registers
+t1		DS	1
+py0		DS	1			; Paddle Y coordinates
+py1		DS	1
+
+; Scanline counters
+scan_0		DS	1			; Track the number of scanlines down each segment
+scan_1		DS	1
+scan_3		DS	1
+scan_x		DS	1			; Counter for tracking X along the scanline
+
+; Pong ball
+ORG	$10
+pong_bank	EQU	$
+bx		DS	1			; Ball X, Y
+by		DS	1
+bxv		DS	1			; Ball X, Y velocity
+byv		DS	1
+
+; **** BITMAP *****************************************************************
+
+; Organize the bitmap banks
+
+ORG	$50
+bitmap_0
+
+ORG	$70
+bitmap_1
+
+; **** MACROS *****************************************************************
+
+; *****************************************************************************
+; *
+; *	Del_us
+; *
+; *	Delays the program by <del> microseconds (at 10 MHz) with an optional
+; *	clock padding.
+; *
+; *	Destroys: t0
+
+Del_us MACRO del, pad
+LOCAL del_loop
+
+	; Ignore the delay if it's zero
+	IF ( ( del ) > 0 )
+
+		; Load c0 with the delay
+		MOV	t0, #( del )	; (2)
+
+		; Each nonzero iteration of the delay loop costs 10 clocks (1us at 10MHz)
+del_loop
+		JMP	$ + 1		; (3)
+		JMP	$ + 1		; (3)
+		DJNZ	t0, del_loop	; (2/4)
+
+	ENDIF
+
+	; Pad the delay with as many clocks as requested
+	IF ( ( pad ) > 0 )
+
+		; If the padding is less than 3 clocks, use NOPs
+		IF ( ( pad ) < 3 )
+			REPT pad
+			NOP
+			ENDR
+
+		; Otherwise, fill the bulk of the delay with JMP's to the next
+		; instruction, followed by NOPs to pad it to the desired length
+		ELSE
+			REPT ( ( pad ) / 3 )
+			JMP 	$ + 1
+			ENDR
+			REPT ( ( pad ) // 3 )
+			NOP
+			ENDR
+		ENDIF
+
+	ENDIF
+
+ENDM ; End Del_us
+
+; **** SUBROUTINES ************************************************************
+
+ORG	$0
+
+; **** Bitmap color translation ***********************************************
+
+bmp_color_map
+	JMP	PC + W
+	RETW	LEVEL_BLACK	; 00
+	RETW	LEVEL_GREY_D	; 01
+	RETW	LEVEL_GREY_L	; 10
+	RETW	LEVEL_WHITE	; 11
+
+; *****************************************************************************
+; *
+; *	Init_Game ()
+; *
+; *	User-defined subroutine for initializing the game. Runs before the main
+; *	loop begins.
+
+Init_Game
+
+	; Initialize the pong ball
+
+	BANK	#pong_bank
+	MOV	bx,  #50		; Position the ball
+	MOV	by,  #50
+	MOV	bxv, #1			; Set the initial velocity
+	MOV	byv, #1
+
+	; **** Initialize paddle
+
+	MOV	py0, #20
+	MOV	py1, #40
+
+RET ; End Init_Game ()
+
+; *****************************************************************************
+; *
+; *	Update_Game ()
+; *
+; *	User-defined subroutine for handling game logic.
+; *
+; *	REQUIRED TIME: 252us
+
+Update_Game
+
+	; **** Update the pong game
+
+	BANK	#pong_bank			; (1)
+
+	; Move the ball by its velocity
+	ADD	bx, bxv				; (2)
+	ADD	by, byv				; (2)
+
+	; Check the ball against the screen boundaries
+
+	; X bounce
+	CJB	bx, #SCREEN_MAX_X, no_x_bounce	; (4/6)
+	NOP					; (1)
+	NOP					; (1)
+	NOT	bxv				; (1)
+	INC	bxv				; (1)
+	ADD	bx, bxv				; (2)
+no_x_bounce
+
+	; Y bounce
+	CJB	by, #SCREEN_MAX_Y, no_y_bounce	; (4/6)
+	NOP					; (1)
+	NOP					; (1)
+	NOT	byv				; (1)
+	INC	byv				; (1)
+	ADD	by, byv				; (2)
+no_y_bounce
+
+	; **** Move paddle according to the buttons
+
+	; Check the up button
+	MOV	t0, RB				; (2)
+	AND	t0, #%00100000			; (1)
+	JZ	no_up				; (2/4)
+	SUB	py0, #2				; (2)
+	SUB	py1, #2				; (2)
+	JMP	up_done				; (3)
+no_up
+	REPT	5
+	NOP
+	ENDR
+up_done
+
+	; Check the down button
+check_down
+	MOV	t0, RB				; (2)
+	AND	t0, #%01000000			; (1)
+	JZ	no_down				; (2/4)
+	ADD	py0, #2				; (2)
+	ADD	py1, #2				; (2)
+	JMP	down_done			; (3)
+no_down
+	REPT	5
+	NOP
+	ENDR
+down_done
+
+	; **** Pad the rest of the update period
+	Del_us	247, 1
+
+RET ; End Update_Game ()
+
+; *****************************************************************************
+; *
+; *	Draw_Screen ()
+; *
+; *	User-defined subroutine for drawing the screen.
+; *
+; *	REQUIRED TIME: 51us
+
+Draw_Screen
+
+IF ( 1 )
+
+	; Is a paddle scanline being drawn?
+	CJB	scan_0, py0, no_paddle_0	; (4/6)
+	NOP
+	NOP
+	CJA	scan_0, py1, no_paddle_1	; (4/6)
+	NOP
+	NOP
+
+	MOV	RC, #LEVEL_WHITE		; (2)
+
+	; Draw the paddle
+	Del_us	8,0
+	MOV	RC, #LEVEL_BLACK		; (2)
+	NOP					; (1)
+	NOP					; (1)
+	NOP					; (1)
+	MOV	RC, #LEVEL_GREY_L		; (2)
+	NOP					; (1)
+	NOP					; (1)
+	NOP					; (1)
+	MOV	RC, #LEVEL_WHITE		; (2)
+
+	Del_us	31, 2
+	MOV	RC, #LEVEL_GREY_L		; (2)
+	NOP					; (1)
+	NOP					; (1)
+	NOP					; (1)
+	MOV	RC, #LEVEL_BLACK		; (2)
+	NOP					; (1)
+	NOP					; (1)
+	NOP					; (1)
+	MOV	RC, #LEVEL_WHITE		; (2)
+
+	Del_us	8, 0
+	
+	RETP
+
+no_paddle_0
+
+	REPT	6
+	NOP
+	ENDR
+
+no_paddle_1
+
+	; Determine if the ball is on the line
+	CJNE	scan_0, by, no_ball	; (4/6)
+
+	BANK	#pong_bank
+
+	; Move to the start of the pixel
+	; MOV + ( bx - 1 * DJNZ ) = 4 net clocks per iteration
+	MOV	RC, #LEVEL_WHITE	; (2)
+	MOV	scan_x, bx		; (2)
+	INC	scan_x			; (1) Increment to prevent a 255-cycle loop at zero
+x0_loop_0
+	DJNZ	scan_x, x0_loop_0	; (2/4)
+	
+	; Draw pixel
+	MOV	RC, #LEVEL_BLACK	; (2)
+	MOV	RC, #LEVEL_WHITE	; (2)
+
+	; Move to the end of the screen
+	MOV	scan_x, #110		; (2)
+	SUB	scan_x, bx		; (2)
+	INC	scan_x			; (1) Increment to prevent a 255-cycle loop at zero
+x1_loop_0
+	DJNZ	scan_x, x1_loop_0	; (2/4)
+
+	Del_us	3, 5
+
+	RETP
+
+	; **** Draw a blank line
+no_ball
+
+	MOV	RC, #LEVEL_WHITE
+	Del_us	49, 0
+	RETP
+
+ELSE
+
+	; Test pattern - "NTSC Neopolitian"
+	MOV	RC, #LEVEL_WHITE
+	Del_us	16, US_CLOCKS - 2
+	MOV	RC, #LEVEL_BLACK
+	Del_us	16, US_CLOCKS - 2
+	MOV	RC, #LEVEL_GREY_L
+	Del_us	16, US_CLOCKS - 2
+
+draw_done
+
+ENDIF
+
+RETP ; End Draw_Screen ()
+
+; **** PROGRAM ****************************************************************
+
+ORG	$100
+Main
+
+	CALL Init_Game			; Let the user initialize the game
+
+	; Set each I/O pin's direction
+	MODE	RB_DIR
+	MOV	!RC, #%11100000
+	
+start_frame
+
+	; **** START FRAME ****************************************************
+
+	; Initialize the scanline counters
+	CLR	scan_0			; (1)
+	MOV	scan_1, #SCAN_OS_0	; (2)
+	MOV	scan_3, #SCAN_OS_1	; (2)
+
+	; **** GENERATE RASTER ************************************************
+
+start_raster
+
+	; Black - 1.5us
+	MOV	RC, #LEVEL_BLACK	; (2)
+	Del_us	1, 5 - 2		; Absorb the 2 clocks in the following MOV
+	
+	; Sync - 4.7us
+	MOV	RC, #LEVEL_SYNC		; (2)
+	Del_us	4, 7 - 2		; Absorb the 2 clocks in the following MOV
+
+	; Black - 4.7us
+	MOV	RC, #LEVEL_BLACK	; (2)
+	Del_us	4, 7
+
+	; Draw the screen - 51us
+	CALL	Draw_Screen		; 51us (Function) + .3us (CALL) + .3us (RET) = 51.6us
+	Del_us	0, 4			; Pad the 51.6us to 52us
+
+	INC	scan_0
+	CJB	scan_0, #SCAN_RASTER, start_raster ; (4/6)
+
+	; **** GENERATE OVERSCAN **********************************************
+
+start_os0
+
+	; Black - 1.5us
+	MOV	RC, #LEVEL_BLACK	; (2)
+	Del_us	1, 5 - 2		; Absorb the 2 clocks in the following MOV
+	
+	; Sync - 4.7us
+	MOV	RC, #LEVEL_SYNC		; (2)
+	Del_us	4, 7 - 2		; Absorb the 2 clocks in the following MOV
+
+	; Black - 4.7us
+	MOV	RC, #LEVEL_BLACK	; (2)
+	Del_us	4, 7
+
+	; Video - 52.5us
+	Del_us	52, 1			; Absorb the 4 clocks in the following DJNZ
+
+	DJNZ	scan_1, start_os0
+
+	; **** GENERATE VERTICAL SYNC/UPDATE GAME *****************************
+
+	; Output the sync signal
+	MOV	RC, #LEVEL_SYNC		; (2)
+
+	; Update the game - 252us + .3us (CALL) + .3us (RET) + .2us (MOV) = 252.8us
+	CALL 	Update_Game
+	Del_us	1, 2			; Round it up to 254us
+
+	; **** GENERATE OVERSCAN **********************************************
+
+start_os1
+
+	; Black - 1.5us
+	MOV	RC, #LEVEL_BLACK	; (2)
+	Del_us	1, 5 - 2		; Absorb the 2 clocks in the following MOV
+	
+	; Sync - 4.7us
+	MOV	RC, #LEVEL_SYNC		; (2)
+	Del_us	4, 7 - 2		; Absorb the 2 clocks in the following MOV
+
+	; Black - 4.7us
+	MOV	RC, #LEVEL_BLACK	; (2)
+	Del_us	4, 7
+
+	; Video - 52.5us
+	Del_us	52, 1			; Absorb the 4 clocks in the following DJNZ
+
+	DJNZ	scan_3, start_os1
+
+	; **** MANUAL OVERSCAN LINE *******************************************
+
+	; Black - 1.5us
+	MOV	RC, #LEVEL_BLACK	; (2)
+	Del_us	1, 5 - 2		; Absorb the 2 clocks in the following MOV
+	
+	; Sync - 4.7us
+	MOV	RC, #LEVEL_SYNC		; (2)
+	Del_us	4, 7 - 2		; Absorb the 2 clocks in the following MOV
+
+	; Black - 4.7us
+	MOV	RC, #LEVEL_BLACK	; (2)
+	Del_us	4, 7
+
+	; Video - 52.5us
+	Del_us	51, 6			; Absorb the 11 clocks in the following JMP
+					; and the frame set-up code above
+
+	; **** END OF FRAME ***************************************************
+
+	JMP	start_frame
+
+Main_End
+
+; **** ROM BITMAP *************************************************************
+
+ORG	$600
+
+rom_bmp_bank_0
+	DW	%11110000, %11111111, %11111111, %11110011
+	DW	%00111111, %11111111, %11111111, %11111111
+	DW	%00001111, %00001100, %00000011, %11111111
+	DW	%00111111, %11110000, %00000000, %11111111
+
+rom_bmp_bank_1
+	DW	%00111111, %00000000, %00000000, %00000000
+	DW	%11111111, %00000000, %00000000, %00000000
+	DW	%11111111, %00000000, %00000000, %00000000
+	DW	%11111111, %11000000, %00000000, %00000000

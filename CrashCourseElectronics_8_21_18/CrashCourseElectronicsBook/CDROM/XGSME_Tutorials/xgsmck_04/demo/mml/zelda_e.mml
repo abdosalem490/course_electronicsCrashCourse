@@ -1,0 +1,33 @@
+;---------------------------------------------------------------
+#TITLE		THE LEGEND OF ZELDA  - ending -
+#COMPOSER		Kouji Kondou
+#PROGRAMER			Izumi.
+#OCTAVE-REV 0
+;---------------------------------------------------------------
+
+ABC t112
+
+A @2 v6 o5 l8
+A [g<g>ce d+<g>b<b> acea gcde acfa a-cdf e<g>ce d<ab>d]2
+A L 
+A g4.e8d+4b4 a2g2 a4.b8>d4c4< g4.e8d2 g4r16 v5 e8.d+4r16 v6 d+16g16b16 a4r16e8.g4r4
+A a4r16b8.>d8c4<a8 g4r16e8.d4r4  g4r16 v5 e8.d+4r16 v6 d+16g16b16 a4r16e8.g4r4
+A a4r16b8.>d8c4d8 e2.e8e8 d4c2<b8a8 g4.e8a4e4 d8e8f8f+8g4e4 @0 c1 @2
+
+
+B @2 v5 o5 l8 
+B [r16 g<g>ce d+<g>b<b> acea gcde acfa a-cdf e<g>ce d<ab>d16]2
+B L 
+B e4.c8<b4>d+4 e2e2 f4.f8f4f4 e4.c8<b2> e4r16 v4 c8.<b4> v5 r16r16r16r16 e4r16c8.e4r4
+B f4r16f8.f8f4f8 e4r16c8.<b4>r4  e4r16 v4 c8.<b4> v5 r16r16r16r16 e4r16c8.e4r4
+B f4r16f8.f8f4f8 g+2.g+8g+8 f4f2f8f8 e4.c8c+4c+4< f8g8a8a+8b4g4 e8e16e8f16g16f16e4r4>
+
+
+C @2 v7 o3 l8 
+C r1r1r1r2rgab>
+C cg<g>g< b>g<g>g cg<g>g ccde f>c<c>c< f>c<c>c< e>c<c>c< g<gab>
+C L
+C [cg<g>g< b>g<g>g cg<g>g ccde f>c<c>c< f>c<c>c< e>c<c>c< g<gab>]2
+C cg<g>g< b>g<g>g cg<g>g ccde f>c<c>c< f>c<c>c< eeg+b>e<r4e
+C f>c<c>c< f>c<c>c< e>c<c>c< a<ab>c+ deff+g<gab> cc16cc16e16d16c4r4
+

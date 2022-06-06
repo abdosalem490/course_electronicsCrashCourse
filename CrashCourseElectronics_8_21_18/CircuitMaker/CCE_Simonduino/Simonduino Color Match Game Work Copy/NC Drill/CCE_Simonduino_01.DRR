@@ -1,0 +1,21 @@
+---------------------------------------------------------------------------
+NCDrill File Report For: CCE_Simonduino_01.CMPcbDoc   8/2/2017  5:37:18 PM
+---------------------------------------------------------------------------
+
+Layer Pair : Top Layer to Bottom Layer
+ASCII RoundHoles File : CCE_Simonduino_01.TXT
+
+Tool         Hole Size           Hole Type     Hole Count Plated       Tool Travel
+---------------------------------------------------------------------------
+T1        10mil (0.254mm)          Round          113              28.29 Inch (718.63 mm)
+T2        27.6mil (0.70104mm)      Round          2                0.19 Inch (4.88 mm)
+T3        39.4mil (1.00076mm)      Round          68               17.88 Inch (454.21 mm)
+T4        40.2mil (1.02108mm)      Round          2                0.10 Inch (2.54 mm)
+T5        50mil (1.27mm)           Round          21               2.82 Inch (71.68 mm)
+T6        86.6mil (2.19964mm)      Round          2                0.50 Inch (12.70 mm)
+T7        129.9mil (3.29946mm)     Round          4                2.75 Inch (69.89 mm)
+T8        35.4mil (0.89916mm)      Round          2         NPTH   0.17 Inch (4.40 mm)
+---------------------------------------------------------------------------
+Totals                                            214              52.71 Inch (1338.93 mm)
+
+Total Processing Time (hh:mm:ss) : 00:00:00

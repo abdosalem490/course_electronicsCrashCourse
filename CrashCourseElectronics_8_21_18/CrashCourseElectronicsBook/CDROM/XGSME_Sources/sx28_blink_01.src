@@ -1,0 +1,31 @@
+; Set device to SX28, enable external high speed oscillator
+		DEVICE	SX28L, OSCHS3
+		IRC_CAL IRC_FAST
+
+		RESET	Start		; set restart vector to start of code
+		FREQ 	1_000_000
+
+; Variable storage
+count1		EQU	$08
+count2		EQU	$09
+
+		ORG $000
+Start		
+		mov	M, #$0F		; Select direction mode 
+		mov	RC,#%00000000	; Set port C output latch to 0's
+		mov	!RC,#%00000000	; Set port C direction to output
+	
+Main		
+		mov	W,/RC		; grab inverse of RC bit7
+		mov	RC,W		; and store it in RC bit7
+
+		call	delay		; delay to slow down blinking
+
+		jmp	Main		; goto main				
+
+Delay		clr	Count1  	; Initialize Count1, Count2	
+		clr	Count2							
+
+Loop		djnz	Count1,loop	; Decrement until all are zero		
+		djnz	Count2,loop						
+		RET			; then return				

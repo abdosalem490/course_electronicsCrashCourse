@@ -1,0 +1,54 @@
+;---------------------------------------------------------------
+#TITLE		Paperboy
+#COMPOSER	Mark Cooksey
+#PROGRAMER	mic
+#OCTAVE-REV 	0
+;---------------------------------------------------------------
+
+
+A t150 o3 l8 @2 v6 
+A L
+A fa>cfc<afaeg>cec<geg
+A dfa>d<afdfceg>c<gece
+A [<a+>dfa+fd<a+>d<a>cfafcac]2
+A fa>cfc<afaeg>cec<geg
+A dfa>d<afdfceg>c<gece
+A <a+>dfa+fd<a+>d<a>cfafcac
+A <ga+>dgd<a+ga+>ceg>c<gece
+A <a>cfa<a+>dfa+<a>cfafc<a>c
+
+
+B t150 o4 l4 v6 @2
+B L
+B a2gf>c2<g2
+B >d2efe16d16c2v5c4v6c8v6
+B d2c<a+>c16<a+16a2..
+B a2gfg1
+B a2gf>c2<g2
+B >d2efe16d16c2..
+B d2c<a+>c16<a+16a2..
+B a+2.>c8<a+8agfe
+B f1&1
+
+
+C t150 l8 v5 @2
+C L
+C o3
+C [ffrc]2
+C [eere]2
+C ddraddrdccrgccrf
+C <[a+a+rf]2
+C [aara]2
+C [>d+d+r<a+]2
+C [>ccr<g]2
+C >[ffrc]2
+C [eere]2
+C ddraddrdccrgccrf
+C <[a+a+rf]2
+C [aara]2
+C [>d+d+r<a+]2
+C [>ccr<g]2
+C [ffrf]2
+C [ffrc]2
+
+

@@ -1,0 +1,194 @@
+
+; /////////////////////////////////////////////////////////////////////////////
+;
+; Source Filename: XGS_PE_SOUND_02.SRC 
+; Description: Pico Edition Sound Demo
+; Generates sound using a wave table lookup with sine, sawtooth and square wave
+; data sets, the sound streams out of the table and is sent out to the audio
+; DAC. Plays each waveform a moment and cycles thru all of them.
+;
+; Last Modified: 4.15.2005
+;
+; Instructions:
+; Run from 0.5 - 10 Mhz
+; Try changing the values in the wave tables at the end of the program
+; /////////////////////////////////////////////////////////////////////////////
+
+; Architecture 3 - Media System
+; 4-bit video drive
+;
+;          Audio  upper 4-bits                    |          Intensity (Luma) lower 4-bits
+;
+; | AUD_ISEL3 | AUD_ISEL2 | AUD_ISEL1 | AUD_ISEL0 | VID_ISEL3 | VID_ISEL2 | VID_ISEL1 | VID_ISEL0 |
+;
+;      b7          b6          b5          b4          b3          b2           b1         b0                                             
+;      
+;
+; The Media Hardware Port Mapping Bits from the SX28
+;
+;Port Bit	XGS PE Bit	Description
+
+; RC0 		VID_ISEL0	Bit 0 of the intensity signal that controls LUMA.
+; RC1 		VID_ISEL1	Bit 1 of the intensity signal that controls LUMA.
+; RC2 		VID_ISEL2  	Bit 2 of the intensity signal that controls LUMA.
+; RC3 		VID_ISEL3 	Bit 3 of the intensity signal that controls LUMA.
+
+; this demo uses these bits, make sure to mask off video bits in a real application!
+
+; RC4 		AUD_ISEL0	Bit 0 of the audio value.
+; RC5  		AUD_ISEL1	Bit 1 of the audio value.
+; RC6  		AUD_ISEL2	Bit 2 of the audio value.
+; RC7  		AUD_ISEL3	Bit 3 of the audio value.
+
+; /////////////////////////////////////////////////////////////////////////////
+; Set device attributes
+; /////////////////////////////////////////////////////////////////////////////
+
+; Set device to SX28, enable external high speed oscillator
+		DEVICE 	SX28L, STACKX, OPTIONX, TURBO
+		IRC_CAL IRC_FAST
+
+		RESET	Start		; set restart vector to start of code
+		FREQ 	1_000_000	; initial frequency
+
+		; use the SX-KEY and Device Clock control to slowly 
+		; change the frequency from .5-10 Mhz and listen as the sound
+		; changes octaves					
+		; with the current code and delay running the program at 
+		; 0.5 Mhz results in a output frequency of the waveform of
+		; approximately 1 Khz audio.
+
+; /////////////////////////////////////////////////////////////////////////////
+; Defines
+; /////////////////////////////////////////////////////////////////////////////
+
+; /////////////////////////////////////////////////////////////////////////////
+; Global variables
+; /////////////////////////////////////////////////////////////////////////////
+
+; Variable storage
+count1		EQU	$08	; generic counter vars
+count2		EQU	$09
+var_0		EQU	$0A	; generic scratch vars
+var_1		EQU	$0B
+sample_index	EQU	$0C	; index var
+mem_ptr_low	EQU	$0D	; 16-bit memory pointer
+mem_ptr_hi	EQU	$0E
+
+; /////////////////////////////////////////////////////////////////////////////
+; Macros
+; /////////////////////////////////////////////////////////////////////////////
+
+; /////////////////////////////////////////////////////////////////////////////
+; Data watches
+; /////////////////////////////////////////////////////////////////////////////
+
+; /////////////////////////////////////////////////////////////////////////////
+;  Begin Program After Restart
+; /////////////////////////////////////////////////////////////////////////////
+
+		ORG $000
+Start		
+		; Initialize I/O controller for Pico Edition A->Input, B->Output, C->Output
+
+		mov	w, #$1F		; Set mode register to write direction register
+		mov	m,w
+
+		mov	 RA, #%00000000	; Set port A output latch to zero
+		mov	!RA, #%00000000	; Set port A direction
+
+		mov	 RC, #%00000000	; Set port C output latch to zero
+		mov	!RC, #%00000000	; Set port C direction
+
+		mov 	!RB, #%11111111 ; Set port B direction 
+		mov	w, #$1E		; Set mode register to write pullup resistor
+		mov	m,w
+		mov	!RB, #%00000000 ; Set joystick inputs pullups on (0=on, 1=off)
+
+; /////////////////////////////////////////////////////////////////////////////
+;  Main Program Loop
+; /////////////////////////////////////////////////////////////////////////////
+	
+Main		
+; play each waveform a moment and repeat forever
+
+		; play the sine waveform
+		mov	mem_ptr_hi, #sine_table >> 8	; point M:W at the wave table (upper 4-bits)
+		mov	mem_ptr_low, #sine_table	; lower 4 bits
+		mov 	count2, #5			; how long to play the waveform
+		call 	Play_Wave			; play the waveform
+
+		; play the square waveform
+		mov	mem_ptr_hi, #square_table >> 8	; point M:W at the wave table (upper 4-bits)
+		mov	mem_ptr_low, #square_table	; lower 4 bits
+		mov 	count2, #5			; how long to play the waveform
+		call 	Play_Wave			; play the waveform
+
+		; play the sawtooth waveform
+		mov	mem_ptr_hi, #sawtooth_table >> 8; point M:W at the wave table (upper 4-bits)
+		mov	mem_ptr_low, #sawtooth_table	; lower 4 bits
+		mov 	count2, #5			; how long to play the waveform
+		call 	Play_Wave			; play the waveform
+
+		jmp	Main				; repeat forever
+
+; /////////////////////////////////////////////////////////////////////////////
+;  Subroutines
+; /////////////////////////////////////////////////////////////////////////////
+
+;//////////////////////////////////////////////////////////////////////////////
+; plays a waveform for a specific number of counts
+; expects: 	mem_ptr_high:mem_ptr_low = start address of 32 value table
+; 		Count2 = 
+Play_Wave
+
+; the rate at which this code outputs all 32 values from the selected
+; wavetable dictates the overall "frequency" of the audio
+
+; play waveform 256 times for each Count2
+
+		clr	count1				; reset inner loop counter
+Wave_Loop_Init
+		mov 	sample_index, #0		; clear out index
+Wave_Loop
+		mov	M, mem_ptr_hi			; (2) point M:W at the wave table (upper 4-bits)
+		mov	W, mem_ptr_low			; (2) lower 4 bits
+		clc					; (1) 
+		add	W, sample_index			; (1) add the offset into the wave table data
+		iread					; (4) get the wave table data value
+							; after iread we have M:W = sine_table[W]
+		mov 	var_0, W			; (1) mov W into var_0
+		swap 	var_0				; (1) swap upper and lower nibble of var_0
+		and	var_0, #$F0			; (2) mask lower bits, so they don't disturb video
+		mov 	RC, var_0
+
+		; insert nops or delay here to slow down the "frequency" of playback
+
+		inc	sample_index			; (1) increment data pointer
+		cjbe 	sample_index, #31, Wave_Loop	; (4/6) while sample_index <= 31
+
+		djnz	count1, Wave_Loop_Init		; perform inner loop count1<=255
+		djnz	count2, Wave_Loop_Init		; while count2 > 0 
+		ret					; return to caller
+
+; /////////////////////////////////////////////////////////////////////////////
+;  End Program
+; /////////////////////////////////////////////////////////////////////////////
+
+; /////////////////////////////////////////////////////////////////////////////
+;  Begin Data Section
+; /////////////////////////////////////////////////////////////////////////////
+
+; wave tables
+; each wave must be 32 values long and use only the lower 4-bits of each memory word
+		ORG $200
+
+sine_table 	DW 	8, 9, 11, 12, 13, 14, 14, 15, 15, 15, 14, 14, 13, 12, 11, 9, 8, 7, 5, 4, 3, 2, 2, 1, 1, 1, 2, 2, 3, 4, 5, 7, 
+sawtooth_table 	DW 	0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7, 8, 8, 8, 9, 9, 10, 10, 11, 11, 12, 12, 13, 13, 14, 14, 15,
+square_table 	DW 	15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+
+
+; /////////////////////////////////////////////////////////////////////////////
+;  End Data Section
+; /////////////////////////////////////////////////////////////////////////////
+

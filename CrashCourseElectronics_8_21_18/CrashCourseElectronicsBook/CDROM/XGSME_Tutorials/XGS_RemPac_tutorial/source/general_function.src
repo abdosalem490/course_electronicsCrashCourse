@@ -1,0 +1,114 @@
+
+Write_Snd_Command 
+; writes a command to the BU8763, all time delays good up to 80 Mhz
+
+; on entry , lower 3 bits of sdreg contain address
+; and all 8 bits of sddata contain data
+; screg  = X  X  X  X  X  R2 R1 R0
+; scdata = D7 D6 D5 D4 D3 D2 D1 D0
+;Control signals:
+;
+; RA3 -> SCLK  - serial clock 200ns/200ns min
+; RA4 -> SDATA - 400ns
+; RA5 -> SSTB  - 200ns min
+;
+; All commands are sent in a serial stream 11 bits at a time in the following format:
+;
+; |   Address   |                   Data                            |
+; *******************************************************************
+; * D10 * D9  * D8  * D7  * D6  * D5  * D4  * D3  * D2  * D1  * D0  *
+; *******************************************************************
+;
+;
+; Write Command Sequence Psuedo Code
+;
+; Reset System (5ms)
+;
+; Write Command Begin...
+;
+; data[] is binary vector holding 11 bits of command
+;
+; Start
+;
+; SSTB(1, 250ns)
+;
+; for bit = 10 to 0
+;	begin
+;	
+;	SDATA = data[bit]
+;	Data Setup Time, SCLK = (0, 250ns)
+;	SCLK = (1, 250ns)
+;	
+;	next bit
+;
+; End Write Command
+	
+	mov 	RA, #%00000000 		; clear RA first
+	DELAY(30)		; wait 200ns+
+
+	setb 	RA.SSTB_BIT 	; strobe BU673 SSTB line
+	DELAY(30)		; wait 200ns
+	clrb 	RA.SSTB_BIT	; zero BU673 SSTB line
+
+	mov 	counter3, #11	; 11 bits per command
+
+:Send_Bit_Command_Loop
+
+	clrb 	RA.SCLK_BIT	; SCLK = (0)
+
+	; read next bit in command stream
+	sb 	joystick1.2		; jump over if set
+	jmp 	:Bit_Command_Zero
+
+	; bit set, write 1 to SDATA
+	setb 	RA.SDATA_BIT 	; SDATA = (1)
+
+	jmp	:Bit_Command_Setup
+
+:Bit_Command_Zero
+
+	; bit clear, write 0 to SDATA
+	clrb 	RA.SDATA_BIT 	; SDATA = (0)
+
+:Bit_Command_Setup
+
+	DELAY(30)		; setup time for data
+
+	setb 	RA.SCLK_BIT	; SCLK = (1)
+
+	DELAY(30)		; wait 200ns+
+
+	; shift next bit into position
+	; shift data thru carry, shift carry into address
+	; shift address over and next bit into position 2 for reading
+	rl 	joystick2
+	rl 	joystick1
+		
+	djnz 	counter3, :Send_Bit_Command_Loop
+	retp
+
+
+; Prepare and send various scanline video signal
+PREPARE_VIDEO_HORIZ
+	; front porch 1.5us 
+	mov RE, #BLACK		; ( 2 cycles ) black
+	DELAY (CLK_SCALE*15-2)
+
+	; hsync 4.7us
+	mov RE, #SYNC		; ( 2 cycles ) sync
+	DELAY (CLK_SCALE*47 - 2)
+
+	; pre-burst .6us
+	mov RE, #BLACK		; ( 2 cycles ) sync
+	DELAY (CLK_SCALE*6 - 2)
+
+	; color burst reference 2.5us (9-10 clocks)
+	mov RE, #CBURST_ON	; ( 2 cycles ) sync
+	DELAY (CLK_SCALE*25 - 2)
+
+	; post-burst 1.6us
+
+	mov RE, #BLACK		; ( 2 cycles ) sync
+	DELAY (CLK_SCALE*16 - 2-3)
+	retp ; 3
+

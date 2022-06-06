@@ -1,0 +1,34 @@
+;---------------------------------------------------------------
+#TITLE		Great Giana sisters subtune 5
+#COMPOSER	Chris Hülsbeck
+#PROGRAMER	mic
+#OCTAVE-REV 	0
+;---------------------------------------------------------------
+
+
+; Global tempo
+ABC t150
+
+A o4 l1 v6 @0
+A L
+A ggff
+A d+d+dd
+A [<g4>g4]4[<f4>f4]4
+A [<d+4>d+4]4[<d4>d4]4
+
+
+B o5 l4 v7 @2
+B L
+B [gaa+a g>c<a+a gaa+>c dc<a+a
+B gaa+a g>c<a+a f+gaa+ >cd<a+a]2
+
+
+C o5 l4 v7 @2
+C L
+C r8 [d8r8]63 r8
+
+
+
+
+
+

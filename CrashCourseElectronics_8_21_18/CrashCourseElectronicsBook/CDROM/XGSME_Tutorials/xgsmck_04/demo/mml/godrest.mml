@@ -1,0 +1,50 @@
+;---------------------------------------------------------------
+#TITLE		God rest ye merry gentlemen
+#COMPOSER	Unknown
+#PROGRAMER	mic
+#OCTAVE-REV 0
+;---------------------------------------------------------------
+
+; Global tempo
+ABC t112
+
+;---------
+; Square 1
+;---------
+A o4 l8 v7 @2
+A b>cde<bagf+e2&4r
+A L
+A e
+A [ebbagf+edef+gab4.a]2
+A >c<ab>cde<bagef+ga4ga
+A b4>c<bbagf+e4g16f+16ea4ga
+A b>cde<bagf+e2&4r
+
+;---------
+; Square 2
+;---------
+B o4 l8 v6 @2 
+B df+ggf+4d+4r<b4>c<b4.>
+B L
+B r
+B eggf+e<b>edr<b>ef+g4.e
+B eggf+e<b>edr<b>ef+g4.r
+B e2a4f+4e4f+ed4d4
+B d4edf+4d+4<b4>e16d16cf+4ef+
+B df+ggf+4d+4r<b4>c<b4.>
+
+;---------
+; Triangle
+;---------
+C o4 l8 v7 @0
+C gab>c<d+4b4e4b4e4.
+C L
+C r
+C [e2.r4e2.r4]2
+C a4b4>d2<b2r4ef+
+C g2d+4b4e4c4f+16e16def+
+C gab>c<d+4b4e2&4r
+
+
+
+

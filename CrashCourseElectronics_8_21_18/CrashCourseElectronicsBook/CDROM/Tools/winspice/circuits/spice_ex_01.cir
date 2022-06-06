@@ -1,0 +1,44 @@
+Voltage Regulator Model Circuit
+
+* Data statements for component values and network
+
+
+* First the voltage source from nodes 0 to 1 @ 12.0V
+V1 1 0 DC 12.0V
+
+* The current load from nodes 2 to 0 @ 50.0mA
+Iload 2 0 DC 50.0mA
+
+* Resistor R1 from nodes 1 to 2 @ 24.0 ohm
+R1 1 2 24.0
+
+* Resistor R2 from nodes 2 to 0 @ 17.0 ohm
+R2 2 0 17.0
+
+* We want a DC solution, .OP re-iterates this
+
+.OP
+
+* The .DC command instructs SPICE to step/sweep the voltage
+* So we can print values with .PRINT
+
+.DC V1 12 12 1
+
+* Dummy control block for WinSpice doesn't assume SPICE2 model and used SPICE33
+
+.control
+.endc
+
+* Manually instruct SPICE to print out the node voltages
+
+* Print node voltages
+.PRINT DC V(1) V(2)
+
+* Print the current thru R1 and R2
+.PRINT DC I(R1) I(R2)
+
+* Last, we need to end the code
+
+.END
+
+

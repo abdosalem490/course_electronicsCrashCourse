@@ -1,0 +1,25 @@
+dw	$63
+dw	$1C
+dw	$3C
+dw	$63
+dw	$3E
+dw	$7E
+dw	$36
+dw	$63
+dw	$03
+dw	$1C
+dw	$03
+dw	$1E
+dw	$3E
+dw	$7B
+dw	$3C
+dw	$77
+dw	$63
+dw	$60
+dw	$63
+dw	$3E
+dw	$3F
+dw	$63
+dw	$1C
+dw	$1E
+; 24 bytes

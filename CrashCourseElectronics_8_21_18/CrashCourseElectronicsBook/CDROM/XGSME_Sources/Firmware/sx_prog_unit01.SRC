@@ -1,0 +1,1689 @@
+; SX Programmer BLAST! Interface for XGS Micro
+;
+; Version 1.3
+;	- Fixes reset bug (hardware on/off switch does not fully reset;
+;	  must use reset button)
+; 	- Adds startup LED animation
+
+; SX20/4MHz Version
+
+; Sits between the hardware programmer and the PC (via the parellel port), and
+; executes commands and exchanges data. Uses buffered reads and writes to
+; increase performance.
+
+; **** NOTES ******************************************************************
+
+; PC <-> PROGRAMMER INTERFACE (PARALLEL PORT)
+;
+;  PC                   SX (Programmer)
+; ----+              +-------------------+
+;     |              |                   | 
+;   2 |-> Strobe   ->| RB4(14)    RA0(6) |-> V0
+;   3 |-> Clock    ->| RB5(15)    RA1(7) |-> V5
+;   4 |-> Data In  ->| RB6(16)    RA2(8) |-> V12
+;     |   	     |            RA3(9) |-> VZ
+;  10 |<- Data Out <-| RB7(17)           | 
+;     |              |           RB0(10) |<- Ack In
+;     |              |                   | 
+; ----+              +-------------------+
+
+; PC COMMAND FORMAT -----------------------------------------------------------
+;
+;                    SX ISP Command
+;                           |
+;                   +-------+-------+
+;                   |               |
+; XXXX XXXXXXXXXXXX XXXX XXXXXXXXXXXX
+; Meta Rep. Count   Cmd  Data
+;
+;   28..31 - Meta       - Meta command, used to direct programmer (not SX)
+;   16..27 - Rep. Count - Number of times to repeat command
+;    0..15 - Cmd/Data   - 16-bit SX ISP command image
+
+; PROGRAMMER RESPONSE FORMAT --------------------------------------------------
+;
+;                      Return Data
+;                           |
+;                   +-------+-------+
+;                   |               |
+; XXXX XXXXXXXXXXXX XXXX XXXXXXXXXXXX
+; Stat Code         Cmd  Data
+;
+;   28..31 - Stat     - Status ($F = Success, $E = Error)
+;   16..27 - Code     - Error Code
+;    0..15 - Cmd/Data - 16-bit SX return data (lower 12 bits only used for READ data)
+
+; PROGRAMMER META COMMANDS/CODES ----------------------------------------------
+;
+; 0 - Initialize ISP
+; 1 - Shut Down ISP
+; 2 - Send ISP Command
+; 3 - Run Diagnostics (return diagnostics vector)
+; 4 - Enter loop mode
+; 5 - Exit loop mode
+;
+; E - Error
+; F - Success
+
+; BUGS ------------------------------------------------------------------------
+;
+; - Find out why/how carry is affecting ADD/SUB operations
+; - Some commands have trouble executing more than X times (16-bit counter buggy?)
+
+; **** DIRECTIVES *************************************************************
+
+DEVICE	SX20, OSC4MHZ, TURBO, OPTIONX
+RESET	Main
+
+; **** CONSTANTS **************************************************************
+
+; **** Port Control Modes
+
+PORT_DIR		EQU	$0F	; I/O direction
+PORT_PLP		EQU	$0E	; Enable pull-ups
+PORT_LVL		EQU	$0D	; TTL or CMOS buffer
+
+; **** I/O Pin Bit Masks
+
+; RA
+PIN_NONE		EQU	%0000
+PIN_OSC1_0V		EQU	%0001
+PIN_OSC1_5V		EQU	%0010
+PIN_OSC1_12V		EQU	%0100
+PIN_OSC2_LO		EQU	%1000
+
+; RB
+PIN_ACK_IN		EQU	%0000
+
+; **** I/O Pin Bits
+
+; RA
+BIT_OSC1_0V		EQU	RA.0
+BIT_OSC1_5V		EQU	RA.1
+BIT_OSC1_12V		EQU	RA.2
+BIT_OSC2_LO		EQU	RA.3
+
+; RB
+BIT_ACK_IN		EQU	RB.0
+
+; **** Programmer Meta Commands
+
+CMD_INIT_ISP		EQU	$0
+CMD_SHUT_DOWN_ISP	EQU	$1
+CMD_SEND_ISP_CMD	EQU	$2
+CMD_RUN_DIAG		EQU	$3
+CMD_ENTER_LOOP		EQU	$4
+CMD_EXIT_LOOP		EQU	$5
+CMD_WRITE_BUFFER	EQU	$6
+CMD_STREAM_BUFFER_OUT	EQU	$7
+CMD_READ_BUFFER		EQU	$8
+CMD_STREAM_BUFFER_IN 	EQU	$9
+CMD_INC_MEM_PTR		EQU	$A
+
+; **** ISP Commands
+
+ISP_CMD_ERASE	    	EQU	$00
+ISP_CMD_READ_DEVICE 	EQU	$10
+ISP_CMD_READ_FUSEX	EQU	$20
+ISP_CMD_PROG_FUSEX	EQU	$30
+ISP_CMD_LOAD_DATA	EQU	$40
+ISP_CMD_PROG_MEM	EQU	$50
+ISP_CMD_READ_MEM    	EQU	$60
+ISP_CMD_INC_MEM_PTR 	EQU	$70
+ISP_CMD_NOP	    	EQU	$F0
+
+; **** ISP I/O MODES
+
+ISP_IO_READ		EQU	$0
+ISP_IO_WRITE		EQU	$1
+
+; **** Response Status Codes
+
+STATUS_SUCCESS		EQU	$0A			; Command was successful
+STATUS_ERROR		EQU	$0B			; Command failed
+
+; **** GLOBALS ****************************************************************
+
+ORG	$8
+
+; **** Current command (32-bit buffer with 4 separately addressable bytes)
+
+cmd_0			DS	1
+cmd_1			DS	1
+cmd_2			DS	1
+cmd_3			DS	1
+
+; **** Temp registers (counters, scratch pads, accumulators, etc.)
+
+t0			DS	1
+t1			DS	1
+t2			DS	1
+t3			DS	1
+
+; **** Send_ISP_Cmd Bank
+ORG	$30
+send_isp_cmd_bank	EQU	$
+
+cmd_buff_0		DS	1			; Local buffer for command
+cmd_buff_1		DS	1
+ret_data_0		DS	1			; Returned data
+ret_data_1		DS	1			; Returned data
+rep_count_lo		DS	1			; 16-bit repetition count
+rep_count_hi		DS	1
+rep_lo			DS	1
+rep_hi			DS	1
+isp_io_mode		DS	1			; Packet I/O mode - read or write
+run_forever		DS	1
+data_buff_index		DS	1			; Index into data buffer (for streaming)
+data_buff_ptr		DS	1			; Physical pointer into data buffer (for streaming)
+data_buff_size		DS	1			; Size of buffer segment to stream out
+
+; **** Data Buffer
+
+ORG 	$50
+data_buff_bank_0	EQU	$
+
+ORG 	$70
+data_buff_bank_1	EQU	$
+
+ORG 	$90
+data_buff_bank_2	EQU	$
+
+ORG 	$B0
+data_buff_bank_3	EQU	$
+
+; **** DEBUGGER WATCHES *******************************************************
+
+WATCH	cmd_0, 		   8, UHEX
+WATCH	cmd_1, 		   8, UHEX
+WATCH	cmd_2, 		   8, UHEX
+WATCH	cmd_3, 		   8, UHEX
+
+WATCH	t0,		   8, UHEX
+WATCH	t1,		   8, UHEX
+WATCH	t2,		   8, UHEX
+WATCH	t3,		   8, UHEX
+
+WATCH	send_isp_cmd_bank, 8, UHEX
+
+WATCH	cmd_buff_0,	   8, UHEX
+WATCH	cmd_buff_1,	   8, UHEX
+WATCH	ret_data_0,	   8, UHEX
+WATCH	ret_data_1,	   8, UHEX
+WATCH	rep_count_lo,	   8, UHEX
+WATCH	rep_count_hi,	   8, UHEX
+WATCH	rep_lo,		   8, UHEX
+WATCH	rep_hi,		   8, UHEX
+WATCH	isp_io_mode,	   8, UHEX
+WATCH	run_forever,	   8, UHEX
+WATCH	data_buff_index,   8, UHEX
+WATCH	data_buff_ptr,	   8, UHEX
+WATCH	data_buff_size,    8, UHEX
+
+; **** MACROS *****************************************************************
+
+; *****************************************************************************
+; *
+; *	Del_ms
+; *
+; *	Millisecond delay.
+; *
+; *	Destroys: t0, t1
+
+Del_ms MACRO del
+LOCAL ms_loop, us_loop_0, us_loop_1, us_loop_2, us_loop_3
+
+	; Load t0 with the delay length
+	MOV	t0, del		; (2)
+
+	; millisecond delay loop
+ms_loop
+
+	; 250us delay loops
+
+	MOV	t1, #249
+us_loop_0
+	DJNZ	t1, us_loop_0
+	MOV	t1, #249
+us_loop_1
+	DJNZ	t1, us_loop_1
+	MOV	t1, #249
+us_loop_2
+	DJNZ	t1, us_loop_2
+	MOV	t1, #249
+us_loop_3
+	DJNZ	t1, us_loop_3
+
+	DJNZ	t0, ms_loop	; (2/4)
+
+ENDM ; End Del_ms
+
+; *****************************************************************************
+; *
+; *	Set_Response
+; *
+; *	Sets up the response to the PC in the command buffer.
+; *
+; *		<status> - 4-bit status of the response
+; *		<code>   - 12-bit status code to explain status in more detail
+; *			   (usually an error code). This macro only allows 8-bit
+; *			   values to be stored here.
+; *		<b1>	 - High byte of 16-bit data field
+; *		<b0>	 - Low byte of 16-bit data field
+
+Set_Response MACRO status, code, b1, b0
+
+	; Set the status field
+	MOV	cmd_3, status		; Put the value into the lower 4 bits
+	RL	cmd_3			; Rotate it to the upper 4 bits
+	RL	cmd_3
+	RL	cmd_3
+	RL	cmd_3
+	AND	cmd_3, #%11110000	; Clear the lower 4 bits
+
+	; Set the status code field
+	MOV	cmd_2, code
+
+	; Set the data field
+	MOV	cmd_1, b1
+	MOV	cmd_0, b0
+
+ENDM ; End Set_Response
+
+; **** SUBROUTINE JUMP TABLE **************************************************
+
+ORG	$10
+
+Call_Init_ISP			JMP	@Init_ISP
+Call_Shut_Down_ISP		JMP	@Shut_Down_ISP
+Call_Send_ISP_Cmd		JMP	@Send_ISP_Cmd
+Call_Send_ISP_Cmd_Slice		JMP	@Send_ISP_Cmd_Slice
+Call_Send_ISP_Read_Slice	JMP	@Send_ISP_Read_Slice
+Call_Read_Buffer		JMP	@Read_Buffer
+Call_Write_Buffer		JMP	@Write_Buffer
+Call_Stream_Buffer_In		JMP	@Stream_Buffer_In
+Call_Stream_Buffer_Out		JMP	@Stream_Buffer_Out
+Call_Inc_Mem_Ptr		JMP	@Inc_Mem_Ptr
+Call_Init_Anim			JMP	@Init_Anim
+
+; **** MAIN *******************************************************************
+
+Main
+
+	; **** INITIALIZE *****************************************************
+
+	; Define the RA port as outputs
+	MODE	PORT_DIR
+	MOV	!RA, #%00000000
+
+	; Define the RB port as TTL inputs with pull-ups enabled
+	MODE	PORT_DIR
+	MOV	!RB, #%01111111
+	MODE	PORT_LVL
+	MOV	!RB, #%11111111
+	MODE	PORT_PLP
+	MOV	!RB, #%00000000
+
+	; Define the RC port as diagnostic outputs
+	MODE	PORT_DIR
+	MOV	!RC, #%00000000
+	MOV	RC,  #%00000000
+
+	; Turn off the ports to prevent garbage from being written to the
+	; target device
+	CLR	RA
+
+	; **** ACTIVITY ANIMATION *********************************************
+
+	CALL	@Call_Init_Anim
+
+	; **** STROBE POLLING LOOP ********************************************
+
+	; Look for a strobe signal from the PC to indicate a command is being sent.
+	; When the strobe is detected, enter a loop to read each of the 32 bits of the
+	; command in serial.
+
+start_cmd_read
+
+	; Drive the data out line low to indicate the system is not busy
+	CLRB	RB.7
+
+	; Use <t1> as the command buffer bit counter, and loop 32 times
+	MOV	t1, #32
+
+	; Clear the command buffer
+	CLR	cmd_0
+	CLR	cmd_1
+	CLR	cmd_2
+	CLR	cmd_3
+
+	; Wait for the strobe to go low
+	; while ( strobe == 1 );
+cmd_strobe_poll
+	SNB	RB.4
+	JMP	cmd_strobe_poll
+
+	; Idle while the strobe is low
+	; while ( strobe == 0 );
+cmd_idle_strobe
+	SB	RB.4
+	JMP	cmd_idle_strobe
+
+	; **** READ COMMAND LOOP **********************************************
+
+	; Read a 32-bit command from the PC in serial, storing the results in the
+	; global 4-byte command buffer. At each iteration, if the clock line is
+	; high, data is ready on the data line.
+
+read_cmd
+
+	; If the clock line is high, the next bit is on the data line. Otherwise,
+	; check again
+	; while ( clock == 0 );
+	SB	RB.5
+	JMP	read_cmd
+
+	; Store the data line in the carry so it can shifted into the command buffer
+	CLC			; Assume the bit is low, and set the carry accordingly
+	SNB	RB.6		; If the bit is high, the carry will be set in the next instruction
+	STC
+
+	; Shift the entire command buffer to the left 1 place, bringing the new bit
+	; into the first bit (stored in the carry flag), and moving each previous
+	; bit one step closer to its final position
+	RL	cmd_0
+	RL	cmd_1
+	RL	cmd_2
+	RL	cmd_3
+
+	; Idle until the clock goes low again
+	; while ( clock == 1 );
+idle_clock
+	SNB	RB.5
+	JMP	idle_clock
+
+	DJNZ	t1, read_cmd	; READ THE NEXT BIT
+
+	; The packet has been read
+
+	; **** PERFORM THE COMMAND'S ACTION ***********************************
+
+	; **** Isolate the Meta Command - Upper 4 bits of <cmd_3>
+
+	MOV	t0, cmd_3	; Copy cmd_3, where the meta command is found
+	RR	t0		; Rotate the meta command into the lower 4 bits
+	RR	t0
+	RR	t0
+	RR	t0
+	AND	t0, #%00001111	; Mask out the upper 4 bits, leaving the meta command
+
+	; **** Invoke the Meta command's handler subroutine
+
+	; Jump to the appropriate function invocation
+
+	CJE	t0, #CMD_INIT_ISP,          do_init_isp
+	CJE	t0, #CMD_SHUT_DOWN_ISP,     do_shut_down_isp
+	CJE	t0, #CMD_SEND_ISP_CMD,      do_send_isp_cmd
+	CJE	t0, #CMD_WRITE_BUFFER,      do_write_buffer
+	CJE	t0, #CMD_STREAM_BUFFER_OUT, do_stream_buffer_out
+	CJE	t0, #CMD_READ_BUFFER,       do_read_buffer
+	CJE	t0, #CMD_STREAM_BUFFER_IN,  do_stream_buffer_in
+	CJE	t0, #CMD_INC_MEM_PTR,	    do_inc_mem_ptr
+
+	JMP	cmd_done	; Unrecognized command
+
+	; Command handler invocations
+
+do_init_isp
+	CALL	@Call_Init_ISP
+	JMP	cmd_done
+do_shut_down_isp
+	CALL	@Call_Shut_Down_ISP
+	JMP	cmd_done
+do_send_isp_cmd
+	CALL	@Call_Send_ISP_Cmd
+	JMP	cmd_done
+do_write_buffer
+	CALL	@Call_Write_Buffer
+	JMP	cmd_done
+do_stream_buffer_out
+	CALL	@Call_Stream_Buffer_Out
+	JMP	cmd_done
+do_read_buffer
+	CALL	@Call_Read_Buffer
+	JMP	cmd_done
+do_stream_buffer_in
+	CALL	@Call_Stream_Buffer_In
+	JMP	cmd_done
+do_inc_mem_ptr
+	CALL	@Call_Inc_Mem_Ptr
+	JMP	cmd_done
+
+	; Command is finished, response code is set and ready to send
+cmd_done
+
+	; **** RETURN THE RESPONSE ********************************************
+
+	; Use t2 as the command buffer bit counter, and loop 32 times
+	MOV	t2, #32
+
+	; Pull the Data Out line high and hold it (RB.7)
+	OR	RB, #%10000000
+
+	; Wait until the strobe line goes high before sending the response
+	; while ( strobe == 0 );
+ret_strobe_poll
+	SB	RB.4
+	JMP	ret_strobe_poll
+
+	; Idle until the strobe goes low again
+	; while ( strobe == 1 );
+ret_idle_strobe
+	SNB	RB.4		; Skip the jump if the strobe is high
+	JMP	ret_idle_strobe	; The strobe is still high
+
+send_bit
+
+	; If the clock line is high, the PC is ready for the next bit. Otherwise,
+	; check again
+	SB	RB.5
+	JMP	send_bit
+
+	; Shift each bit in the command buffer towards the right. After the shifts,
+	; the carry flag will store the status of the former bit 0
+	RR	cmd_3
+	RR	cmd_2
+	RR	cmd_1
+	RR	cmd_0
+
+	; Put the carry flag on the Data Out line
+	MOV	t0, RB
+	CLRB	t0.7
+	SNC
+	SETB	t0.7
+	MOV	RB, t0
+
+	; Idle until the clock goes low again (to maintain sync with the PC and hold the bit)
+	; while ( clock == 1 );
+ret_idle_clock
+	SNB	RB.5
+	JMP	ret_idle_clock
+	
+	DJNZ	t2, send_bit	; SEND THE NEXT BIT
+
+	; **** The response has been sent
+
+	; Look for the next command
+	JMP	start_cmd_read
+
+End_Main
+
+; **** SUBROUTINES ************************************************************
+
+; *****************************************************************************
+; *
+; *	Init_ISP
+; *
+; *	Initializes ISP mode.
+
+Init_ISP
+
+	CLR	RA
+
+	; **** STEP 1 - Drive OSC1 low
+
+	MOV	RA, #PIN_OSC1_0V
+	Del_ms	#5
+
+	; **** STEP 2 - Drive OSC2 low () and pulse OSC1 9 times (20 to be safe)
+
+	; Drive OSC2 low
+	MOV	RA, #PIN_OSC1_0V | PIN_OSC2_LO
+	Del_ms	#5
+
+	; Toggle OSC1 20 times
+	MOV	t2, #20
+osc1_loop
+	MOV	RA, #PIN_OSC1_5V | PIN_OSC2_LO	; Toggle OSC1 high
+	Del_ms	#1
+	MOV	RA, #PIN_OSC1_0V | PIN_OSC2_LO	; Toggle OSC1 low
+	Del_ms	#1
+	DJNZ	t2, osc1_loop
+
+	; **** STEP 3 - Release OSC2 and make sure the SX is driving it high
+
+	; Release OSC2
+	MOV	RA, #PIN_OSC1_0V
+	Del_ms	#5
+
+	; Determine if the SX is driving OSC2 high, and filter out any possible noise
+
+	CLR	t0			; <t0> is the "noise threshold counter"
+noise_check
+
+	; Read in the value on OSC2
+	MOV	t1, RB
+	AND	t1, #PIN_ACK_IN
+
+	; If OSC2 is not low, increment <t0> (the noise counter)
+	CSNE	t1, #0
+	INC	t0
+
+	; If the noise counter is beyond the threshold, it must be a solid signal
+	CSA	t0, #64
+	JMP	noise_check
+
+	; **** STEP 4 - Apply programming voltage (12V) to OSC1
+	MOV	RA, #PIN_OSC1_12V
+	Del_ms	#20
+
+	; **** ISP mode is now active
+
+	; Assume the command succeeded
+	Set_Response	#STATUS_SUCCESS, #0, #0, #0
+	RETP
+
+End_Init_ISP
+
+; *****************************************************************************
+; *
+; *	Shut_Down_ISP
+; *
+; *	Shuts down ISP mode.
+
+Shut_Down_ISP
+
+	; **** STEP 1 - Drop the voltage on OSC1 to zero with a delay long enough
+	;               to let the SX reset the system
+	MOV	RA, #PIN_OSC1_0V	
+	Del_ms	#5
+
+	; **** STEP 2 - Release OSC1
+	MOV	RA, #PIN_NONE
+
+	; Assume the command succeeded
+	Set_Response	#STATUS_SUCCESS, #0, #0, #0
+	RETP
+
+End_Shut_Down_ISP
+
+ORG	$200
+
+; *****************************************************************************
+; *
+; *	Send_ISP_Cmd
+; *
+; *	Sends an ISP command.
+; *
+; *	ISP CYCLE WAVEFORMS
+; *
+; *	   A - Last clock of previous cycle
+; *	   B - First clock of cycle
+; *	   C - Low (sync) clock of cycle
+; *	   D - Third clock of cycle
+; *	   E - Fourth clock of cycle
+; *	   F - First clock of next cycle
+; *	   G - Sync cycle
+; *
+; *     +---+---+   +---+---+---+
+; *	  A | B | C | D   E | F
+; *	    +   +---+       +
+; *	
+; *	-+---+-------+---+---+---+-
+; *	 |   |   G   |   |   |   |
+; *	 +   +       +   +   +   +
+
+Send_ISP_Cmd
+
+	; **** INITIAL SETUP **************************************************
+
+	; Switch to the subroutine's bank
+	BANK	send_isp_cmd_bank
+
+	; Isolate the Rep Count - 8 bits of <cmd_2> + Lower 4 bits of <cmd_3>
+	MOV	rep_count_lo, cmd_2	; Copy the 8 bits of Rep Count from <cmd_2>
+	MOV	rep_count_hi, cmd_3	; Copy the lower 4 bits of <cmd_3> for the rest
+	AND	rep_count_hi, #%00001111
+
+	; DEBUG FEATURE - If both bytes of the rep count are zero, run command forever
+	CLR	run_forever
+	CJNE	rep_count_lo, #0, :skip_run_forever
+	CJNE	rep_count_hi, #0, :skip_run_forever
+	MOV	run_forever, #1
+:skip_run_forever
+	
+	; Clear the repetition counter
+	CLR	rep_lo
+	CLR	rep_hi
+
+	; Clear the returned data buffer
+	CLR	ret_data_0
+	CLR	ret_data_1
+
+	; **** DETERMINE THE DATA I/O MODE (READ OR WRITE?) *******************
+
+	; Isolate the 4-bit command in a temporary register
+	MOV	t0, cmd_1		; Get the upper 8 bits of the packet
+	AND	t0, #%11110000		; Mask off the upper 4 bits to isolate the command
+
+	; If the command is not a write command, leave the I/O mode set to read;
+	; otherwise, switch to the write mode
+	CJE	t0, #ISP_CMD_READ_DEVICE, :set_io_mode_read
+	CJE	t0, #ISP_CMD_READ_FUSEX,  :set_io_mode_read
+	CJE	t0, #ISP_CMD_READ_MEM,    :set_io_mode_read
+:set_io_mode_write
+	MOV	isp_io_mode, #ISP_IO_WRITE
+	JMP	:io_mode_done
+:set_io_mode_read
+	MOV	isp_io_mode, #ISP_IO_READ
+:io_mode_done
+
+	; **** EXECUTE THE COMMAND THE SPECIFIED NUMBER OF TIMES **************
+:attempt_cmd
+
+	; **** LOOK FOR THE NEXT SYNC CYCLE ***********************************
+
+	; Wait for OSC2 to go low
+	; while ( OSC2 == 1 );
+:idle_osc2_low
+	JB	BIT_ACK_IN, :idle_osc2_low
+
+	; Wait until the line goes high again
+	; while ( OSC2 == 0 );
+:idle_osc2_hi
+	JNB	BIT_ACK_IN, :idle_osc2_hi
+
+	; Look for the sync cycle. The sync cycle essentially consists of 7
+	; consecutive high clocks. Outside of the sync signal, there are never
+	; more than 3 consecutive high clocks. This means that as long as the
+	; high signal length is at least 4 128kHz clocks (equivalent to 128
+        ; clocks at 4MHz), it can be safely considered the sync cycle.
+	; while ( OSC2 == 1 );
+	NOP					; (1) Pad the JB to exactly 4 clocks per iteration
+	CLR	t1				; (1)
+:check_sync_cycle
+	INC	t1				; (1)
+	JB	BIT_ACK_IN, :check_sync_cycle	; (4)
+
+	; If the counter reached at least 26, it must be a sync cycle. Otherwise,
+	; start over on the next low signal
+	CJB	t1, #30, :attempt_cmd
+
+	; If the counter reached any more than 50, the signal is too long to be
+	; a valid sync. Start over on the next low signal
+	;CJA	t1, #50, :attempt_cmd
+
+	; **** READ/WRITE THE COMMAND/DATA ************************************
+
+:output_cmd
+
+	; Output 16 bits
+	MOV	t2, #16
+
+	; Copy the ISP command into the local buffer
+	MOV	cmd_buff_1, cmd_1
+	MOV	cmd_buff_0, cmd_0
+
+	;CJE	isp_io_mode, #ISP_IO_WRITE, :skip_break
+	;MOV	W, #0
+:skip_break
+
+:next_bit
+
+	; **** Depending on the I/O mode, either write the next bit or read one
+
+	; Only consider the I/O mode if the current bit is beyond bit 12 (15-12 are the
+        ; command bits and are always written). Since t0 is counting backwards from
+	; 16, bits 13-16 are the command bits.
+	CJAE	t2,          #13,          :write_next_bit
+	CJE	isp_io_mode, #ISP_IO_READ, :read_next_bit
+
+:write_next_bit
+
+	; Wait for the clock to go high again (the rising edge of the third
+        ; clock, after the sync clock)
+	; while ( OSC2 == 0 );
+:idle_clock_2_rise
+	JNB	BIT_ACK_IN, :idle_clock_2_rise
+
+	; Put the desired status of the port in t0 based on the next bit
+	JB	cmd_buff_1.7, :hi_bit
+:lo_bit
+	MOV	RA, #PIN_OSC1_12V | PIN_OSC2_LO
+
+	JMP	:bit_sent
+:hi_bit
+	MOV	RA, #PIN_OSC1_12V
+
+:bit_sent
+
+	; Delay to hold the data until the end of the cycle (roughly 2 128kHz clocks)
+	; At 4 clocks per loop iteration, this loop must iterate roughly 16 times to simulate
+	; 64 4MHz clocks (2 128kHz clocks)
+	MOV	t0, #14
+:data_hold
+	DJNZ	t0, :data_hold
+
+	; Release OSC2
+	MOV	RA, #PIN_OSC1_12V
+	JMP	:next_bit_done
+
+:read_next_bit
+
+	; Wait until the data is available (2 128kMz clocks, approximately 16 iterations
+        ; of the following loop) 
+	MOV	t0, #12
+:data_wait_0
+	DJNZ	t0, :data_wait_0
+
+	; Read the port and append it to the lower 2 bytes of the command buffer
+	STC			; Assume the value is high
+	SB	BIT_ACK_IN	; If the value is high, don't clear it
+	CLC			; Clear the carry for a low value
+
+	; Shift the carry into the command buffer to insert the next bit
+	RL	ret_data_0
+	RL	ret_data_1
+
+:next_bit_done
+
+	; Make sure OSC2 is fully released
+	; while ( OSC2 == 0 );
+:check_release
+	JNB	BIT_ACK_IN, :check_release
+
+	; Idle until the sync clock of the next cycle
+	; while ( OSC2 == 1 );
+:idle_next_cycle
+	JB	BIT_ACK_IN, :idle_next_cycle
+
+	; Get the next bit ready
+	RL	cmd_buff_0
+	RL	cmd_buff_1
+
+	; Handle the next bit
+	DJNZ	t2, :next_bit
+
+	; **** ALL DATA HAS BEEN READ/WRITTEN *********************************
+
+	; Skip the counter if running forever
+	MOV	t0, run_forever
+	SZ
+	JMP	:output_cmd
+
+	; Increment the 16-bit repetition counter
+	ADD	rep_lo, #1
+	ADDB	rep_hi, C
+	CJNE	rep_lo, rep_count_lo, :loop_not_done
+	CJNE	rep_hi, rep_count_hi, :loop_not_done
+	JMP	:loop_done
+:loop_not_done
+	JMP	:attempt_cmd
+:loop_done
+
+	; **** ALL REPETITIONS HAVE BEEN COMPLETED ****************************
+
+	; Assume the command succeeded
+	Set_Response	#STATUS_SUCCESS, #0, #0, #0
+
+	; Store the return data in the command buffer
+	MOV	cmd_0, ret_data_0
+	MOV	cmd_1, ret_data_1
+
+	RETP
+
+End_Send_ISP_Cmd
+
+; *****************************************************************************
+; *
+; *	Write_Buffer ()
+; *
+; *	Writes a value to the data buffer at the specified address.
+; *
+; *     |        |        |        |      |    
+; *     XXXX XXXXXXXX XXXXXXXX XXXXXXXXXXXX
+; *     Meta          Address  Value
+; *
+; *     28..31 - Meta    - Meta command, used to direct programmer (not SX)
+; *     12..19 - Address - Address (byte, not word) within buffer at which to write
+; *      0..11 - Value   - 12-bit program word to write to address
+
+Write_Buffer
+
+	; Get the address (8 bits), found in the upper-half of C1 and the lower
+	; half of C2. Store the result in <t0>
+	MOV	t0, cmd_1
+	AND	t0, #%11110000
+	RR	t0
+	RR	t0
+	RR	t0
+	RR	t0
+	AND	t0, #%00001111
+
+	MOV	t1, cmd_2
+	AND	t1, #%00001111
+	RL	t1
+	RL	t1
+	RL	t1
+	RL	t1
+	AND	t1, #%11110000
+	OR	t0, t1
+
+	; Calculate the absolute address of the word to be written, within its bank.
+	MOV	t2, t0
+
+	CLC				; Divide the address by 16 to determine which bank
+	REPT	4			; (0-3) the address lies in
+	RR	t2
+	ENDR
+
+	CLC				; Multiply the address by 32 to determine the absolute
+	REPT	5			; address of the value.
+	RL	t2
+	ENDR
+
+	ADD	t2, #data_buff_bank_0	; Relative to base index of bank 0
+	AND	t2, #%11100000		; Mask off the lower bits so only the upper 3 remain (the bank)
+
+	; Get the index into the bank itself and store the result in <t3>
+	MOV	t3, t0			; Get the absolute address
+	AND	t3, #15			; Mod by 16 to get bank offset
+	ADD	t3, #$10		; Add $10 to move past mirrored registers
+
+	; Combine <t2> and <t3> to form the complete address
+	OR	t3, t2
+	MOV	FSR, t3
+
+	; Get the data to write to the buffer (12 bits), found in C0 and the
+	; lower-half of C1. Store it in <t2:t1>
+	MOV	t0, cmd_0
+	MOV	t1, cmd_1
+	AND	t1, #%00001111
+
+	; Write the value to the buffer
+	MOV	IND, t0
+	INC	FSR
+	MOV	IND, t1
+
+	; Assume the command succeeded
+	Set_Response	#STATUS_SUCCESS, #0, #0, #0
+
+	RETP
+
+End_Write_Buffer
+
+; *****************************************************************************
+; *
+; *	Send_ISP_Cmd_Slice ()
+; *
+; *	"Slice" version of Send_ISP_Cmd (). This version expects to be called
+; *	just after the sync has been found, allowing it to be called within
+; *	time-sensitive loops.
+
+Send_ISP_Cmd_Slice
+
+	; **** INITIAL SETUP **************************************************
+
+	; Exit if the amount of reps is not valid
+	CJA	rep_count_lo, #0, :rep_count_valid
+	CJA	rep_count_hi, #0, :rep_count_valid
+	RETP
+:rep_count_valid
+
+	; Clear the repetition counter
+	CLR	rep_lo
+	CLR	rep_hi
+
+	; **** EXECUTE THE COMMAND THE SPECIFIED NUMBER OF TIMES **************
+
+:output_cmd
+
+	; Output 16 bits
+	MOV	t2, #16
+
+	; Make sure the sync cycle is finished
+	; while ( OSC2 == 1 );
+:idle_sync_cycle
+	JB	BIT_ACK_IN, :idle_sync_cycle
+
+	; Copy the ISP command into the local buffer
+	MOV	cmd_buff_1, cmd_1
+	MOV	cmd_buff_0, cmd_0
+
+:next_bit
+
+	; Wait for the clock to go high again (the rising edge of the third
+        ; clock, after the sync clock)
+	; while ( OSC2 == 0 );
+:idle_clock_2_rise
+	JNB	BIT_ACK_IN, :idle_clock_2_rise
+
+	; Put the desired status of the port in t0 based on the next bit
+	JB	cmd_buff_1.7, :hi_bit
+:lo_bit
+	MOV	RA, #PIN_OSC1_12V | PIN_OSC2_LO
+	JMP	:bit_sent
+:hi_bit
+	MOV	RA, #PIN_OSC1_12V
+:bit_sent
+
+	; Delay to hold the data until the end of the cycle (roughly 2 128kHz clocks)
+	; At 4 clocks per loop iteration, this loop must iterate roughly 16 times to simulate
+	; 64 4MHz clocks (2 128kHz clocks)
+	MOV	t0, #14
+:data_hold
+	DJNZ	t0, :data_hold
+
+	; Release OSC2
+	MOV	RA, #PIN_OSC1_12V
+
+	; Make sure OSC2 is fully released
+	; while ( OSC2 == 0 );
+:check_release
+	JNB	BIT_ACK_IN, :check_release
+
+	; If this is the last bit, allow the sync cycle to be used to prepare for the
+	; next command. Otherwise, consume the high period until the sync cycle
+	; hits again.
+	CJE	t2, #1, :pass_off_sync
+
+	; while ( OSC2 == 1 );
+:idle_next_cycle
+	JB	BIT_ACK_IN, :idle_next_cycle
+:pass_off_sync
+
+	; Get the next bit ready
+	RL	cmd_buff_0
+	RL	cmd_buff_1
+
+	; Handle the next bit
+	DJNZ	t2, :next_bit
+
+	; **** ALL DATA HAS BEEN READ/WRITTEN *********************************
+
+	INC	rep_lo
+	CJB	rep_lo, rep_count_lo, :loop_not_done
+	JMP	:loop_done					; (3)
+:loop_not_done
+	JMP	:verify_sync
+
+	; **** VERIFY/RESYNC TO SYNC CYCLE ************************************
+	
+	; Verify the sync cycle is of a proper length
+	; while ( OSC2 == 1 );
+:verify_sync
+	NOP				; (1) Pad the JB to exactly 4 clocks per iteration
+	CLR	t1			; (1)
+:check_sync_cycle_2
+	INC	t1			; (1)
+	JB	BIT_ACK_IN, :check_sync_cycle_2	; (4)
+	
+	; If the counter reached at least 26, it must be a sync cycle. Otherwise,
+	; start over on the next low signal
+	CJAE	t1, #20, :output_cmd
+
+:find_sync
+
+	; Wait for OSC2 to go low
+	; while ( OSC2 == 1 );
+:idle_osc2_low
+	JB	BIT_ACK_IN, :idle_osc2_low
+
+	; Wait until the line goes high again
+	; while ( OSC2 == 0 );
+:idle_osc2_hi
+	JNB	BIT_ACK_IN, :idle_osc2_hi
+
+	; Check for a new sync cycle
+	; while ( OSC2 == 1 );
+	NOP				; (1) Pad the JB to exactly 4 clocks per iteration
+	CLR	t1			; (1)
+:check_sync_cycle
+	INC	t1			; (1)
+	JB	BIT_ACK_IN, :check_sync_cycle	; (4)
+
+	; If the counter reached at least 26, it must be a sync cycle. Otherwise,
+	; start over on the next low signal
+	CJB	t1, #20, :find_sync
+
+	; A new sync was found, jump back into the loop
+	JMP	:output_cmd
+
+	; **** ALL REPETITIONS HAVE BEEN COMPLETED ****************************
+
+:loop_done
+	RETP							; (3)
+
+End_Send_ISP_Cmd_Slice
+
+; *****************************************************************************
+; *
+; *	Stream_Buffer_Out ()
+; *
+; *	Syncs to the ISP clock and streams the data buffer to the target
+; *	device.
+
+Stream_Buffer_Out
+
+	; **** INITIAL SETUP **************************************************
+
+	; Switch to the subroutine's bank
+	BANK	send_isp_cmd_bank
+
+	; Initialize the buffer index and pointer
+	CLR	data_buff_index
+	MOV	data_buff_ptr, #data_buff_bank_0
+
+	; Get the size of the buffer segment to stream out from <cmd_0>
+	MOV	data_buff_size, cmd_0
+	CJA	data_buff_size, #0, :valid_data_buff_size
+	RETP
+:valid_data_buff_size
+	CLC
+	RL	data_buff_size		; Multiply by 2 to compensate for the word size
+
+	; **** LOOK FOR THE NEXT SYNC CYCLE ***********************************
+
+:find_sync
+
+	; Wait for OSC2 to go low
+	; while ( OSC2 == 1 );
+:idle_osc2_low
+	JB	BIT_ACK_IN, :idle_osc2_low
+
+	; Wait until the line goes high again
+	; while ( OSC2 == 0 );
+:idle_osc2_hi
+	JNB	BIT_ACK_IN, :idle_osc2_hi
+
+	; Look for the sync cycle. The sync cycle essentially consists of 7
+	; consecutive high clocks. Outside of the sync signal, there are never
+	; more than 3 consecutive high clocks. This means that as long as the
+	; high signal length is at least 4 128kHz clocks (equivalent to 128
+        ; clocks at 4MHz), it can be safely considered the sync cycle.
+	; while ( OSC2 == 1 );
+	NOP				; (1) Pad the JB to exactly 4 clocks per iteration
+	CLR	t1			; (1)
+:check_sync_cycle
+	INC	t1			; (1)
+	JB	BIT_ACK_IN, :check_sync_cycle	; (4)
+
+	; If the counter reached at least 26, it must be a sync cycle. Otherwise,
+	; start over on the next low signal
+	CJB	t1, #30, :find_sync
+
+	; **** CATCH THE TRAILING SYNC CYCLE OF THE FRAME *********************
+
+	; Allow an entire frame to pass so the trailing sync cycle can be
+	; caught. This allows the command loop to start with a full sync's worth
+	; of clocks to work with.
+
+	; Allow 16 bits/cycles to pass
+	MOV	t2, #16
+
+:next_cycle
+
+	; Wait for the clock to go high again (the rising edge of the third
+        ; clock, after the sync clock)
+	; while ( OSC2 == 0 );
+:idle_clock_2_rise
+	JNB	BIT_ACK_IN, :idle_clock_2_rise
+
+	; If this is the last bit, allow the sync cycle to be used to prepare for the
+	; next command. Otherwise, consume the high period until the clock cycle
+	; hits again.
+	CJE	t2, #1, :pass_off_sync
+
+	; while ( OSC2 == 1 );
+:idle_next_cycle
+	JB	BIT_ACK_IN, :idle_next_cycle
+:pass_off_sync
+
+	; Scan for the next cycle
+	DJNZ	t2, :next_cycle
+
+	; **** STREAM THE BUFFER OUT ******************************************
+
+:stream_loop
+
+	; **** Get the next value from the data buffer
+
+	MOV	FSR, data_buff_ptr
+	MOV	t0,  IND
+	INC	FSR
+	MOV	t1,  IND
+
+	; **** Write the value to the target device
+
+	; Switch to the subroutine's bank
+	BANK	send_isp_cmd_bank
+
+	; Load the data register
+	MOV	cmd_1, #ISP_CMD_LOAD_DATA	; Set the command
+	MOV	cmd_0, t0			; Copy the lower 8-bits into <cmd_0>
+	AND	cmd_1, #%11110000		; Mask off the lower 4-bits of <cmd_1>
+	AND	t1, #%00001111			; Isolate the upper 4 bits of the word in t1
+	OR	cmd_1, t1			; Copy the upper bits into <cmd_1> without disturbing the command
+	MOV	rep_count_lo, #1
+	MOV	rep_count_hi, #0
+	CALL	@Call_Send_ISP_Cmd_Slice
+
+	; Program the next memory location
+	MOV	cmd_1, #ISP_CMD_PROG_MEM
+	MOV	rep_count_lo, cmd_2	; Copy the 8 bits of Rep Count from <cmd_2>
+	MOV	rep_count_hi, cmd_3	; Copy the lower 4 bits of <cmd_3> for the rest
+	AND	rep_count_hi, #%00001111
+	CALL	@Call_Send_ISP_Cmd_Slice
+
+	; Increment the memory pointer
+	MOV	cmd_1, #ISP_CMD_INC_MEM_PTR
+	MOV	rep_count_lo, #1
+	MOV	rep_count_hi, #0
+	CALL	@Call_Send_ISP_Cmd_Slice
+	
+	; **** Next iteration of the loop
+
+	; Move to the next data buffer word
+	ADD	data_buff_index, #2
+	ADD	data_buff_ptr,   #2
+
+	; If the pointer has reached the end of a bank, move it ahead by 16
+	MOV	t0, data_buff_index
+	AND	t0, #15
+	MOV	t1, t0
+	JNZ	:within_bank
+	ADD	data_buff_ptr, #16
+:within_bank
+	
+	; Next iteration of loop
+	CJB	data_buff_index, data_buff_size, :stream_loop
+	
+	; **** CLEAN UP *******************************************************
+
+	; Assume the command succeeded
+	Set_Response	#STATUS_SUCCESS, #0, #0, #0
+
+	RETP
+
+End_Stream_Buffer_Out
+
+; *****************************************************************************
+; *
+; *	Read_Buffer ()
+; *
+; *	Reads a value from the data buffer at the specified address.
+; *
+; *     |        |        |        |      |    
+; *     XXXX XXXXXXXX XXXXXXXX XXXXXXXXXXXX
+; *     Meta          Address
+; *
+; *     28..31 - Meta    - Meta command, used to direct programmer (not SX)
+; *     12..19 - Address - Address into data buffer from which to read
+
+Read_Buffer
+
+	; Get the address (8 bits), found in the upper-half of C1 and the lower
+	; half of C2. Store the result in <t0>
+	MOV	t0, cmd_1
+	AND	t0, #%11110000
+	RR	t0
+	RR	t0
+	RR	t0
+	RR	t0
+	AND	t0, #%00001111
+
+	MOV	t1, cmd_2
+	AND	t1, #%00001111
+	RL	t1
+	RL	t1
+	RL	t1
+	RL	t1
+	AND	t1, #%11110000
+	OR	t0, t1
+
+	; Calculate the absolute address of the word to be written, within its bank.
+	MOV	t2, t0
+
+	CLC				; Divide the address by 16 to determine which bank
+	REPT	4			; (0-3) the address lies in
+	RR	t2
+	ENDR
+
+	CLC				; Multiply the address by 32 to determine the absolute
+	REPT	5			; address of the value.
+	RL	t2
+	ENDR
+
+	ADD	t2, #data_buff_bank_0	; Relative to base index of bank 0
+	AND	t2, #%11100000		; Mask off the lower bits so only the upper 3 remain (the bank)
+
+	; Get the index into the bank itself and store the result in <t3>
+	MOV	t3, t0			; Get the absolute address
+	AND	t3, #15			; Mod by 16 to get bank offset
+	ADD	t3, #$10		; Add $10 to move past mirrored registers
+
+	; Combine <t2> and <t3> to form the complete address
+	OR	t3, t2
+	MOV	FSR, t3
+
+	; Read the value to the buffer
+	MOV	cmd_buff_0, IND
+	INC	FSR
+	MOV	cmd_buff_1, IND
+
+	; Assume the command succeeded
+	Set_Response	#STATUS_SUCCESS, #0, #0, #0
+
+	; Move the data read from the buffer into the return packet
+	MOV	cmd_0, cmd_buff_0	; Copy the lower 8 bits of the value into <cmd_0>
+	MOV	cmd_1, cmd_buff_1	; Copy the upper 8 bits of the value into <cmd_1>
+	AND	cmd_1, #%00001111	; Mask out the upper garbage bits in <cmd_1>
+
+	RETP
+
+End_Read_Buffer
+
+ORG	$400
+
+; *****************************************************************************
+; *
+; *	Send_ISP_Read_Slice ()
+; *
+; *	"Slice" version of Send_ISP_Cmd (). This version expects to be called
+; *	just after the sync has been found, allowing it to be called within
+; *	time-sensitive loops, and specifically supports read commands ONLY.
+
+Send_ISP_Read_Slice
+
+	; **** INITIAL SETUP **************************************************
+
+	; Copy the ISP command into the local buffer
+	MOV	cmd_buff_0, cmd_0
+	MOV	cmd_buff_1, cmd_1
+
+	; Clear the returned data buffer
+	CLR	ret_data_0
+	CLR	ret_data_1
+
+	; **** OUTPUT THE COMMAND *********************************************
+
+	; Make sure the sync cycle is finished
+	; while ( OSC2 == 1 );
+:w_idle_sync_cycle
+	JB	BIT_ACK_IN, :w_idle_sync_cycle
+
+	; Output 4 bits
+	MOV	t2, #4
+
+:w_next_bit
+
+	; Wait for the clock to go high again (the rising edge of the third
+        ; clock, after the sync clock)
+	; while ( OSC2 == 0 );
+:w_idle_clock_2_rise
+	JNB	BIT_ACK_IN, :w_idle_clock_2_rise
+
+	; Put the desired status of the port in t0 based on the next bit
+	JB	cmd_buff_1.7, :w_hi_bit
+:w_lo_bit
+	MOV	RA, #PIN_OSC1_12V | PIN_OSC2_LO
+	JMP	:w_bit_sent
+:w_hi_bit
+	MOV	RA, #PIN_OSC1_12V
+:w_bit_sent
+
+	; Delay to hold the data until the end of the cycle (roughly 2 128kHz clocks)
+	; At 4 clocks per loop iteration, this loop must iterate roughly 16 times to simulate
+	; 64 4MHz clocks (2 128kHz clocks)
+	MOV	t0, #14
+:w_data_hold
+	DJNZ	t0, :w_data_hold
+
+	; Release OSC2
+	MOV	RA, #PIN_OSC1_12V
+
+	; Make sure OSC2 is fully released
+	; while ( OSC2 == 0 );
+:w_check_release
+	JNB	BIT_ACK_IN, :w_check_release
+
+	; If this is the last bit, allow the sync cycle to be used to prepare for the
+	; next command. Otherwise, consume the high period until the sync cycle
+	; hits again.
+	CJE	t2, #1, :w_pass_off_sync
+
+	; while ( OSC2 == 1 );
+:w_idle_next_cycle
+	JB	BIT_ACK_IN, :w_idle_next_cycle
+:w_pass_off_sync
+
+	; Get the next bit ready
+	RL	cmd_buff_0
+	RL	cmd_buff_1
+
+	; Handle the next bit
+	DJNZ	t2, :w_next_bit
+
+	; **** READ THE RESPONSE **********************************************
+
+	; Make sure the sync cycle is finished
+	; while ( OSC2 == 1 );
+:r_idle_sync_cycle
+	JB	BIT_ACK_IN, :r_idle_sync_cycle
+
+	; Output 12 bits
+	MOV	t2, #12
+
+:r_next_bit
+
+	; Wait until the data is available (2 128kMz clocks, approximately 16 iterations
+        ; of the following loop)
+	MOV	t0, #12
+:data_wait_0
+	DJNZ	t0, :data_wait_0
+
+	; Read the port and append it to the lower 2 bytes of the command buffer
+	STC			; Assume the value is high
+	SB	BIT_ACK_IN	; If the value is high, don't clear it
+	CLC			; Clear the carry for a low value
+
+	; Shift the carry into the command buffer to insert the next bit
+	RL	ret_data_0
+	RL	ret_data_1
+
+	; Make sure OSC2 is fully released
+	; while ( OSC2 == 0 );
+:r_check_release
+	JNB	BIT_ACK_IN, :r_check_release
+
+	; If this is the last bit, allow the sync cycle to be used to prepare for the
+	; next command. Otherwise, consume the high period until the sync cycle
+	; hits again.
+	CJE	t2, #1, :r_pass_off_sync
+
+	; while ( OSC2 == 1 );
+:r_idle_next_cycle
+	JB	BIT_ACK_IN, :r_idle_next_cycle
+:r_pass_off_sync
+
+	; Get the next bit ready
+	RL	cmd_buff_0
+	RL	cmd_buff_1
+
+	; Handle the next bit
+	DJNZ	t2, :r_next_bit
+
+	; **** ALL DATA HAS BEEN READ *****************************************
+
+	RETP	
+
+End_Send_ISP_Read_Slice
+
+; *****************************************************************************
+; *
+; *	Stream_Buffer_In ()
+; *
+; *	Syncs to the ISP clock and streams the target device into the data
+; *	buffer.
+
+Stream_Buffer_In
+
+	; **** INITIAL SETUP **************************************************
+
+	; Switch to the subroutine's bank
+	BANK	send_isp_cmd_bank
+
+	; Initialize the buffer index and pointer
+	CLR	data_buff_index
+	MOV	data_buff_ptr, #data_buff_bank_0
+
+	; Get the size of the buffer segment to stream out from <cmd_0>
+	MOV	data_buff_size, cmd_0
+	CJA	data_buff_size, #0, :valid_data_buff_size
+	RETP
+:valid_data_buff_size
+	CLC
+	RL	data_buff_size		; Multiply by 2 to compensate for the word size
+
+	; **** LOOK FOR THE NEXT SYNC CYCLE ***********************************
+
+:find_sync
+
+	; Wait for OSC2 to go low
+	; while ( OSC2 == 1 );
+:idle_osc2_low
+	JB	BIT_ACK_IN, :idle_osc2_low
+
+	; Wait until the line goes high again
+	; while ( OSC2 == 0 );
+:idle_osc2_hi
+	JNB	BIT_ACK_IN, :idle_osc2_hi
+
+	; Look for the sync cycle. The sync cycle essentially consists of 7
+	; consecutive high clocks. Outside of the sync signal, there are never
+	; more than 3 consecutive high clocks. This means that as long as the
+	; high signal length is at least 4 128kHz clocks (equivalent to 128
+        ; clocks at 4MHz), it can be safely considered the sync cycle.
+	; while ( OSC2 == 1 );
+	NOP				; (1) Pad the JB to exactly 4 clocks per iteration
+	CLR	t1			; (1)
+:check_sync_cycle
+	INC	t1			; (1)
+	JB	BIT_ACK_IN, :check_sync_cycle	; (4)
+
+	; If the counter reached at least 26, it must be a sync cycle. Otherwise,
+	; start over on the next low signal
+	CJB	t1, #30, :find_sync
+
+	; **** CATCH THE TRAILING SYNC CYCLE OF THE FRAME *********************
+
+	; Allow an entire frame to pass so the trailing sync cycle can be
+	; caught. This allows the command loop to start with a full sync's worth
+	; of clocks to work with.
+
+	; Allow 16 bits/cycles to pass
+	MOV	t2, #16
+
+:next_cycle
+
+	; Wait for the clock to go high again (the rising edge of the third
+        ; clock, after the sync clock)
+	; while ( OSC2 == 0 );
+:idle_clock_2_rise
+	JNB	BIT_ACK_IN, :idle_clock_2_rise
+
+	; If this is the last bit, allow the sync cycle to be used to prepare for the
+	; next command. Otherwise, consume the high period until the clock cycle
+	; hits again.
+	CJE	t2, #1, :pass_off_sync
+
+	; while ( OSC2 == 1 );
+:idle_next_cycle
+	JB	BIT_ACK_IN, :idle_next_cycle
+:pass_off_sync
+
+	; Scan for the next cycle
+	DJNZ	t2, :next_cycle
+
+	; **** STREAM THE BUFFER IN *******************************************
+
+:stream_loop
+
+	; **** Read the value from the target device
+
+	; Switch to the subroutine's bank
+	BANK	send_isp_cmd_bank
+
+	; Read the next program word
+	MOV	cmd_1, #ISP_CMD_READ_MEM
+	CALL	@Call_Send_ISP_Read_Slice
+
+	; Copy the return value into a global so the bank can be switched safely
+	MOV	t0, ret_data_0
+	MOV	t1, ret_data_1
+
+	; Write the value to the data buffer
+	AND	t1, #%00001111		; Mask off any garbage copied above the 4 bits
+	MOV	FSR, data_buff_ptr	; Point to the data buffer
+	MOV	IND, t0			; Write the lower 8 bits of the word
+	INC	FSR			; Move to the next byte
+	MOV	IND, t1			; Write the upper 4 bits
+
+	; Switch back to the subroutine's bank
+	BANK	send_isp_cmd_bank
+
+	; Increment the memory pointer
+	MOV	cmd_1, #ISP_CMD_INC_MEM_PTR
+	MOV	rep_count_lo, #1
+	MOV	rep_count_hi, #0
+	CALL	@Call_Send_ISP_Cmd_Slice
+
+	; **** Next iteration of the loop
+
+	; Move to the next data buffer word
+	ADD	data_buff_index, #2
+	ADD	data_buff_ptr,   #2
+
+	; If the pointer has reached the end of a bank, move it ahead by 16
+	MOV	t0, data_buff_index
+	AND	t0, #15
+	MOV	t1, t0
+	JNZ	:within_bank
+	ADD	data_buff_ptr, #16
+:within_bank
+	
+	CJB	data_buff_index, data_buff_size, :stream_loop
+	
+	; **** CLEAN UP *******************************************************
+
+	; Assume the command succeeded
+	Set_Response	#STATUS_SUCCESS, #0, #0, #0
+
+	RETP
+
+End_Stream_Buffer_In
+
+; *****************************************************************************
+; *
+; *	Inc_Mem_Ptr ()
+; *
+; *	Synchronously increments the memory pointer on the target device to
+; *	allow fast scanning through memory.
+
+Inc_Mem_Ptr
+
+	; **** INITIALIZE *****************************************************
+
+	; Switch to the subroutine's bank
+	BANK	send_isp_cmd_bank
+
+	; Insert an Incremenet Pointer command into the upper 4 bits of the
+	; command buffer
+	MOV	cmd_1, #ISP_CMD_INC_MEM_PTR
+
+	; **** LOOK FOR THE NEXT SYNC CYCLE ***********************************
+
+:find_sync
+
+	; Wait for OSC2 to go low
+	; while ( OSC2 == 1 );
+:idle_osc2_low
+	JB	BIT_ACK_IN, :idle_osc2_low
+
+	; Wait until the line goes high again
+	; while ( OSC2 == 0 );
+:idle_osc2_hi
+	JNB	BIT_ACK_IN, :idle_osc2_hi
+
+	; Look for the sync cycle. The sync cycle essentially consists of 7
+	; consecutive high clocks. Outside of the sync signal, there are never
+	; more than 3 consecutive high clocks. This means that as long as the
+	; high signal length is at least 4 128kHz clocks (equivalent to 128
+        ; clocks at 4MHz), it can be safely considered the sync cycle.
+	; while ( OSC2 == 1 );
+	NOP				; (1) Pad the JB to exactly 4 clocks per iteration
+	CLR	t1			; (1)
+:check_sync_cycle
+	INC	t1			; (1)
+	JB	BIT_ACK_IN, :check_sync_cycle	; (4)
+
+	; If the counter reached at least 26, it must be a sync cycle. Otherwise,
+	; start over on the next low signal
+	CJB	t1, #30, :find_sync
+
+	; **** CATCH THE TRAILING SYNC CYCLE OF THE FRAME *********************
+
+	; Allow an entire frame to pass so the trailing sync cycle can be
+	; caught. This allows the command loop to start with a full sync's worth
+	; of clocks to work with.
+
+	; Allow 16 bits/cycles to pass
+	MOV	t2, #16
+
+:next_cycle
+
+	; Wait for the clock to go high again (the rising edge of the third
+        ; clock, after the sync clock)
+	; while ( OSC2 == 0 );
+:idle_clock_2_rise
+	JNB	BIT_ACK_IN, :idle_clock_2_rise
+
+	; If this is the last bit, allow the sync cycle to be used to prepare for the
+	; next command. Otherwise, consume the high period until the clock cycle
+	; hits again.
+	CJE	t2, #1, :pass_off_sync
+
+	; while ( OSC2 == 1 );
+:idle_next_cycle
+	JB	BIT_ACK_IN, :idle_next_cycle
+:pass_off_sync
+
+	; Scan for the next cycle
+	DJNZ	t2, :next_cycle
+
+	; **** INCREMENT THE MEMORY POINTER ***********************************
+
+	; Isolate the Rep Count - 8 bits of <cmd_2> + Lower 4 bits of <cmd_3>
+	MOV	rep_count_lo, cmd_2	; Copy the 8 bits of Rep Count from <cmd_2>
+	MOV	rep_count_hi, cmd_3	; Copy the lower 4 bits of <cmd_3> for the rest
+	AND	rep_count_hi, #%00001111
+
+	CALL	@Call_Send_ISP_Cmd_Slice
+
+	; **** CLEAN UP *******************************************************
+
+	; Assume the command succeeded
+	Set_Response	#STATUS_SUCCESS, #0, #0, #0
+
+	RETP
+
+End_Inc_Mem_Ptr
+
+; *****************************************************************************
+; *
+; *	Init_Anim ()
+; *
+; *	Produces a startup "animation" on the programmer unit LED array.
+
+Init_Anim
+
+	MOV	t2, #1
+anim_loop
+	
+	SETB	BIT_OSC1_0V
+	Del_ms	#90
+	CLRB	BIT_OSC1_0V
+
+	SETB	BIT_OSC1_5V
+	Del_ms	#90
+	CLRB	BIT_OSC1_5V
+
+	SETB	BIT_OSC2_LO
+	Del_ms	#90
+	CLRB	BIT_OSC2_LO
+
+	DJNZ	t2, anim_loop
+
+	RETP
+
+End_Init_Anim

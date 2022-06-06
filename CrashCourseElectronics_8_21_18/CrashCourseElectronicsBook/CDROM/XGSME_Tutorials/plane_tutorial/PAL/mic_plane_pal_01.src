@@ -1,0 +1,548 @@
+; MIC_PLANE__PAL_01.SRC
+; Textured/shaded planes for the XGS ME (PAL version)
+; Works only at 80 MHz
+
+
+	TITLE	"Plane demo PAL v01"
+
+
+; This file needs 5 include files:
+; 	general_define.src:  	Defines constants (EQU) and some system variables
+;	general_macro.src: 	Useful general purpose macro definitions and system functions
+;	ninja.src:		Music data
+;	xgslogo.src:		XGS logo bitmap
+;	xgsmp.src:		Music player
+
+	DEVICE	SX52, OSCHS3, XTLBUFD, IFBD	; Set everything for the XGS ME
+	RESET	Start
+	FREQ 	80_000_000 	; this is a directive to the ide only
+			  	; if you want to put the XGS ME into RUN mode
+			  	; you must make sure you go into the 
+				; device settings and make sure that
+				; HS3 is enabled, and crystal drive and
+				; feedback are disabled and then re-program
+				; the chip in PGM mode and then switch it to RUN
+
+	IRC_CAL IRC_FAST	; Prevent a warning
+	ID	"micplane"	; ID string
+
+
+
+; Global variables, starting at bank #2
+		org	$20
+
+
+include		"general_define.src"
+
+	org $40
+pixel		ds 	1
+xCnt		ds	1
+yCnt		ds	1
+temp		ds	1
+cnt1		ds	1
+cnt2		ds	1
+u_w		ds	1	; u whole
+u_f		ds	1	; u fractional
+v_w		ds	1	; v whole
+v_f		ds	1	; v fractional
+u2_w		ds	1	
+u2_f		ds	1
+du_w		ds	1	; delta u whole
+du_f		ds	1	; delta u fractional
+dv_w		ds	1
+dv_f		ds	1
+	org $50
+temp2		ds	1
+vertPtr2	ds	1
+chroma_cnt	ds	1
+chroma_delta	ds	1
+temp3		ds	1
+temp4		ds	1
+u_w2		ds	1
+u_f2		ds	1
+v_w2		ds	1
+v_f2		ds	1
+one_u2		ds	1
+one_v2		ds	1
+du_w2		ds	1
+du_f2		ds	1
+dv_w2		ds	1
+dv_f2		ds	1
+
+
+include		"general_macro.src"
+include 	"ninja.mus"	; Include song data
+include 	"xgsmp.src"	; Include music player
+
+		org 	$0	; Set the start of the program code
+
+		org	$+2	; leave 2 free word here for the debugger
+
+; Jump table
+InitMusic	jmp @XgsMpInit
+UpdateMusic	jmp @XgsMpUpdate
+
+Start		; Our real code starts here
+
+		; Initialize variables
+		bank $50
+		mov chroma_cnt,#0
+		mov chroma_delta,#1
+		clr v_w2
+		clr v_f2
+
+		bank #$40		;This must be same as the org $20 statement
+		clr yCnt
+		clr v_w
+		clr v_f
+
+		mov 10,#$00
+		mov 11,#$08
+		call InitMusic
+		_bank $20
+
+		INITIALIZE_VIDEO	; Initialize I/O controller for video
+		mov phase_alt,#$40
+
+Begin_Raster	
+		bank $40
+		clr u_w
+		clr u_f
+		clr du_w
+		mov du_f,#64
+		clr dv_w
+		mov dv_f,#64
+
+		bank $20
+
+		; Upper half
+
+		mov scanline, #92 		; Render 92 scanlines
+		mov !OPTION, #%11000100		; Sets prescaler to 1:32
+Raster_Loop1	; Loop here for each scanline
+		PREPARE_VIDEO_HORIZ_PAL burst_phase ;#(COLOR1) 	; Prepare required video signal for a scanline
+
+		clr RTCC		; 1
+		mov RE,#BLACK		; 2 (3)
+
+
+		bank $20		; 1
+		mov M,#$0C
+		mov W,scanline
+		iread
+		bank $40
+		mov pixel,W
+
+		bank $20
+		DELAY(500)
+
+		bank $40		; 1
+		mov u2_w,u_w
+		mov u2_f,u_f
+		mov xCnt,#160
+
+		
+
+draw_scanline
+		mov W,u2_w			;1
+		xor W,v_w			;1
+		and W,#8			;1
+
+		mov temp,W
+		mov W,#(15*16)
+		sb temp.3
+		mov W,#(5*16)
+		nop
+		or W,pixel
+
+		mov RE,W			;1
+
+		ADD_8_8 u2_w,u2_f,du_w,du_f	;6
+		djnz xCnt,draw_scanline
+
+
+scanline_done	
+		mov RE, #BLACK 			
+
+		ADD_8_8 v_w,v_f,dv_w,dv_f
+
+		add dv_f,#3
+		snc
+		inc dv_w
+
+		add du_f,#1
+		snc
+		inc du_w
+
+		mov u2_w,#$FF
+		mov u2_f,#$B0
+		ADD_8_8 u_w,u_f,u2_w,u2_f
+	
+		bank $20
+		cjb RTCC,#130,$			; Wait for the scanline to end
+		djnz scanline, Raster_Loop1	; Loop for the next scanline
+
+
+
+		; Bottom half
+
+		mov scanline, #92 		; Render 92 scanlines
+Raster_Loop2	; Loop here for each scanline
+		PREPARE_VIDEO_HORIZ_PAL burst_phase ; Prepare required video signal for a scanline
+
+		clr RTCC			; 1
+		mov RE,#BLACK			; 2 (3)
+
+		bank $20
+		mov M,#$0C
+		mov count1,#92
+		sub count1,scanline
+		mov W,count1
+		iread
+		bank $40
+		mov pixel,W
+
+		bank $20			; 1
+		DELAY(496)
+		bank $40			; 1
+		mov u2_w,u_w
+		mov u2_f,u_f
+		mov xCnt,#160
+
+draw_scanline2
+		mov W,u2_w			;1
+		xor W,v_w			;1
+		and W,#8			;1
+
+		mov temp,W
+		mov W,#(15*16)
+		sb temp.3
+		mov W,#(5*16)
+		nop
+		or W,pixel
+		mov RE,W			;1
+
+		ADD_8_8 u2_w,u2_f,du_w,du_f	;6
+		djnz xCnt,draw_scanline2
+
+
+scanline_done2	
+		mov RE, #BLACK 			
+
+		add v_f,dv_f
+		snc
+		inc v_w
+		add v_w,dv_w
+		
+		add dv_w,#$FF
+		add dv_f,#$FD
+		snc
+		inc dv_w
+
+		add du_w,#$FF
+		add du_f,#$FF
+		snc
+		inc du_w
+
+		mov u2_w,#$00
+		mov u2_f,#80
+		ADD_8_8 u_w,u_f,u2_w,u2_f
+	
+		bank $20
+		cjb RTCC,#130,$
+		djnz scanline, Raster_Loop2	; Loop for the next scanline
+
+	
+		; page_200 trick: this clunky trick is to prevent involuntary jumps
+		; between a page boundary.
+		jmp @page_200
+IF $ > $200
+ERROR "Page Spillage!"
+ENDIF
+
+;##############################################################################
+
+
+org $200
+page_200
+		page $				; Set the new page
+
+		bank $20
+
+		bank $40
+		mov cnt2,#(34+31)		; Number of scanlines
+:Vblank_Loop1
+		bank $20
+		PREPARE_VIDEO_HORIZ_PAL burst_phase
+		clr RTCC
+		bank $40
+		cjae cnt2,#30, :Black_line1
+		cjb  cnt2,#14, :Black_line2
+
+		; Draw XGS overscan logo
+
+		mov RE,#BLACK		; 2. Output black
+		mov cnt1,#8		; 2. Number of pixels
+		mov M,#LOGO_PAGE	; 1
+		mov W,yCnt		; 1
+		iread			; 4. Read first byte
+		mov pixel,W		; 1
+
+		; Calculate the logo gradient
+		mov temp,cnt2		; 2
+		sub temp,#22		; 2. 22 = first_line-char_height = 30-8
+		sb temp.7		; 1. Skip if the result is negative
+		not temp		; 1. Invert bits
+		mov W,#7		; 1. Keep lower 3 bits
+		and temp,W		; 1
+		add temp,#(COLOR11+2)	; 2. Add base color
+	
+		bank $20		; 1
+		DELAY(1624 - 2 - 14 - 8 - 1 - 10)
+		bank $40		; 1
+
+:Draw_bits_0_7
+		mov W,temp ;#(COLOR14+5)	; 1
+		rr pixel		; 1. Place lsb in C
+		sc			; 2 / 1. Skip if bit is set
+		mov W,#BLACK		; 1. Bit was clear, should be black 
+		mov RE,W		; 1. Output color
+		DELAY(31)
+		djnz cnt1,:Draw_bits_0_7 ; 4 / 2
+		mov RE,#BLACK		; 2
+
+		; Read the next byte
+		mov cnt1,#8		; 2
+		mov M,#LOGO_PAGE	; 1
+		inc yCnt
+		mov W,yCnt		; 1
+		iread			; 4
+		mov pixel,W		; 1 (10)	
+:Draw_bits_8_15
+		mov W,temp ;#(COLOR14+5)	; 1
+		rr pixel		; 1
+		sc			; 2 / 1
+		mov W,#BLACK		; 1
+		mov RE,W		; 1
+		DELAY(31)
+		djnz cnt1,:Draw_bits_8_15 ; 4 / 2
+		mov RE,#BLACK		; 2
+
+		; ..and finally the last one
+		mov RE,#BLACK		; 2
+		mov cnt1,#8		; 2
+		mov M,#LOGO_PAGE	; 1
+		inc yCnt
+		mov W,yCnt		; 1
+		iread			; 4
+		mov pixel,W		; 1 (12)	
+:Draw_bits_16_23
+		mov W,temp ;#(COLOR14+5)	; 1
+		rr pixel		; 1
+		sc			; 2 / 1
+		mov W,#BLACK		; 1
+		mov RE,W		; 1
+		DELAY(31)
+		djnz cnt1,:Draw_bits_16_23 ; 4 / 2
+		nop			; 1
+		nop			; 1
+
+		mov RE,#BLACK		; 2
+		sub yCnt,#2		; 2. Set yCnt back to its prior value
+
+		; yCnt is increased by 3 on even scanlines
+		; (logo is 24 pixels wide = 3 bytes/row)
+		mov W,cnt2		; 1
+		not W
+		and W,#1		; 1
+		add yCnt,W		; 1
+		add yCnt,W		; 1
+		add yCnt,W		; 1
+
+		bank $20
+
+		jmp :Next_line		; 3
+
+:Black_line1
+		bank $20
+		mov RE, #BLACK	; ( 2 cycles ) sync
+		jmp :Next_line
+:Black_line2
+		bank $20
+		mov RE, #BLACK		; ( 2 cycles ) sync
+		jmp :Next_line
+
+:Next_line	
+		bank $40		
+		cjb RTCC,#130,$
+		djnz cnt2, :Vblank_Loop1
+		; END BOTTOM SCREEN OVERSCAN
+
+		; VERTICAL SYNC PULSE
+:Begin_Blank
+		mov RE, #SYNC		; send sync signal
+		mov !OPTION, #%11000111	; turns off interrupts, sets prescaler to 1:256
+		clr RTCC		; Start RTCC counter
+
+
+		jmp @page_400
+IF $ > $400
+ERROR "Page Spillage!"
+ENDIF
+
+;##############################################################################
+
+org $400
+page_400
+		page $
+
+		; Change the vertical texture coordinate every frame to create
+		; the illusion of motion.
+		bank $50
+		add v_f2,#$30	; v += 0.1875
+		snc
+		inc v_w2
+		mov W,v_w2
+		bank $40
+		mov v_w,W
+		bank $50
+		mov W,v_f2
+		bank $40
+		mov v_f,W
+
+		bank $40
+		clr yCnt
+
+		mov 10,#$00
+		mov 11,#$08
+		call @UpdateMusic
+		_bank $20
+
+		; We are done, now wait for the remaining time to finish this video frame
+		; and prepare overscan (bottom and top) for the next!
+		cjb RTCC, #60, $	; Wait for remaining vsync (60*256 cycles = 192us = 3 scanlines)
+		; END VERTICAL SYNC PULSE
+
+		mov !OPTION, #%11000100
+
+		; TOP SCREEN OVERSCAN
+		mov scanline, #60 
+:Vblank_Loop3   
+		PREPARE_VIDEO_HORIZ_PAL burst_phase 
+		clr RTCC
+		mov RE, #BLACK 
+		cjb RTCC,#130,$
+		djnz scanline, :Vblank_Loop3
+
+		jmp @Begin_Raster		; Loop back for the next frame
+
+IF $ > $600
+ERROR "Page Spillage!"
+ENDIF
+
+;##############################################################################
+
+
+
+; XGS overscan logo
+LOGO_PAGE 	EQU	$0B
+org 		LOGO_PAGE*$100
+include		"xgslogo.src"
+
+org $C00
+dw	7
+dw	7
+dw	7
+dw	7
+dw	7
+dw	7
+dw	7
+dw	8
+dw	8
+dw	8
+dw	8
+dw	8
+dw	8
+dw	9
+dw	9
+dw	9
+dw	9
+dw	9
+dw	9
+dw	9
+dw	9
+dw	10
+dw	10
+dw	10
+dw	10
+dw	10
+dw	10
+dw	10
+dw	10
+dw	10
+dw	11
+dw	11
+dw	11
+dw	11
+dw	11
+dw	11
+dw	11
+dw	11
+dw	11
+dw	11
+dw	12
+dw	12
+dw	12
+dw	12
+dw	12
+dw	12
+dw	12
+dw	12
+dw	12
+dw	12
+dw	13
+dw	13
+dw	13
+dw	13
+dw	13
+dw	13
+dw	13
+dw	13
+dw	13
+dw	13
+dw	13
+dw	13
+dw	14
+dw	14
+dw	14
+dw	14
+dw	14
+dw	14
+dw	14
+dw	14
+dw	14
+dw	14
+dw	14
+dw	14
+dw	14
+dw	15
+dw	15
+dw	15
+dw	15
+dw	15
+dw	15
+dw	15
+dw	15
+dw	15
+dw	15
+dw	15
+dw	15
+dw	15
+dw	15
+dw	15
+dw	15
+dw	15
+dw	15
+
+
+

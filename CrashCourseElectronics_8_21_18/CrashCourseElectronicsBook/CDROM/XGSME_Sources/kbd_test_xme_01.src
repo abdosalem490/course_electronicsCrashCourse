@@ -1,0 +1,386 @@
+
+; KBD_TEST_XME_01.SRC - Tests PS2 Keyboard Interface
+; Echos all make/break codes to Port C, assumes interface
+; RB3 = KBD_CLOCK
+; RB4 = KBD_DATA
+;
+; /////////////////////////////////////////////////////////////////////////////
+
+
+; /////////////////////////////////////////////////////////////////////////////
+; Set device attributes
+; /////////////////////////////////////////////////////////////////////////////
+
+	DEVICE	SX52
+	RESET	Start
+	FREQ 	80_000_000 	; this is a directive to the ide only
+			  	; if you want to put the XGS ME into RUN mode
+			  	; you must make sure you go into the 
+				; device settings and make sure that
+				; HS3 is enabled, and crystal drive and
+				; feedback are disabled and then re-program
+				; the chip in PGM mode and then switch it to RUN
+
+        CLK_SCALE 	EQU	8	; used to make calling the DELAY macro easier
+					; set this to the frequency / 10,000,000
+
+	DEVICE		OSCHS3		; High-speed external oscillator
+	DEVICE		IFBD		; Crystal feedback disabled
+	DEVICE		XTLBUFD		; Crystal drive disabled
+
+
+; /////////////////////////////////////////////////////////////////////////////
+; Defines
+; /////////////////////////////////////////////////////////////////////////////
+
+KBD_CLOCK	EQU	3 	; RC3
+KBD_DATA	EQU	4	; RC4
+
+KBD_PORT	EQU	RB	; the keyboard port
+DATA_PORT	EQU	RC	; the output data port
+
+; /////////////////////////////////////////////////////////////////////////////
+; Global variables
+; /////////////////////////////////////////////////////////////////////////////
+
+		org $20
+
+Counter1	ds	1 ; timing delay counters
+Counter2	ds	1
+
+kbddata		ds	1 ; return data from keyboard function
+kbdcounter	ds	1 ; counter for keyboard algorithms
+
+; /////////////////////////////////////////////////////////////////////////////
+; Macros
+; /////////////////////////////////////////////////////////////////////////////
+
+SET_KBD_PORT_OUTPUT MACRO
+
+	mov	w, #$1F		        ; Set mode register to write direction register
+	mov	m,w
+	mov	KBD_PORT, #%11111111	; Set port KBD output latch to 1's
+	mov	!KBD_PORT,#%00000000	; Set port KBD direction to output
+ENDM
+
+; /////////////////////////////////////////////////////////////////////////////
+
+SET_KBD_PORT_INPUT MACRO
+
+	mov	w, #$1F		        ; Set mode register to write direction register
+	mov	m,w
+	mov	KBD_PORT, #%11111111	; Set port KBD output latch to 1's
+	mov	!KBD_PORT,#%11111111	; Set port KBD direction to input
+ENDM
+
+; /////////////////////////////////////////////////////////////////////////////
+
+DELAY MACRO clocks
+; this new macro is slightly different than the one found in othe demos
+; this macro can handle large delays up to 25,500 cycles, so to call it use the following
+; constructions
+
+; cycle delay
+; DELAY(number_of_clocks)
+
+; for 80 mhz clock, microsecond parameters
+; DELAY(80*microseconds)
+; example you want a 4.5 uS delay
+; 80*4.5 = 36
+; DELAY(36)
+
+; the preprocessor can NOT do floating point math, so another construction would be to scale
+; all values by 10 then multiply by 8 rather than 80, for example, a 4.5 uS delay could be
+; written
+; DELAY(8*45)
+; which is a little more intuitive
+
+; first compute fractional remainder of 10 and delay
+IF (((clocks) // 10) > 0)
+
+; first 3 clock chunks
+	REPT (((clocks) // 10)/3)
+	JMP $ + 1
+	ENDR
+
+; now the remainder if any
+
+	REPT (((clocks) // 10)//3)
+	NOP
+	ENDR
+ENDIF
+
+; next multiples of 100
+IF (((clocks) / 100) >= 1)
+
+; delay 100*(clocks/100), loop equals 100, therefore 1*(clocks/100) iterations
+	mov counter1, #((clocks)/100) 	; (2)
+:Loop					
+
+	mov counter2, #24	 	; (2)
+:Loop100					
+	djnz counter2, :Loop100		; (4/2)
+
+	djnz counter1, :Loop		; (4/2)
+
+ENDIF
+
+
+; last compute whole multiples of 10, and delay
+IF (( ((clocks) // 100) / 10) >= 1)
+
+; delay 10*(clocks/10), loop equals 10, therefore (clocks/10) iterations
+	mov counter1, #( ((clocks) // 100) / 10) 	; (2)
+:Loop2					
+	jmp $ + 1			; (3)
+	jmp $ + 1			; (3)
+	djnz counter1, :Loop2		; (4/2)
+
+ENDIF
+
+ENDM
+
+; /////////////////////////////////////////////////////////////////////////////
+; Data watches
+; /////////////////////////////////////////////////////////////////////////////
+
+
+; /////////////////////////////////////////////////////////////////////////////
+; Subroutines
+; /////////////////////////////////////////////////////////////////////////////
+
+		org $0
+
+; ////////////////////////////////////////////////////////////////////////////
+Delay64K		
+		clr	counter1  	;Initialize Count1, Count2	
+		clr	counter2						
+
+Loop		djnz	counter1,loop	;Decrement until all are zero		
+		djnz	counter2,loop						
+		RET			;then return				
+; ////////////////////////////////////////////////////////////////////////////
+
+ReadKBD
+
+; on entry 
+
+; on exit
+; kbddata contains the 8-bit scan code
+;
+; this function polls the keyboard to see if there is a high probability that
+; a key scan code is being sent, a much more robust method of course would be
+; to tie and interrupt to the clock line of the keyboard input and use it to
+; start the scanning process, in any case the keyboard function on entry tests 
+; if the CLOCK line and data lines are low, if so then there is a high probability
+; that this is the beginning of a scan code "frame", and thus the alogithm starts
+; otherwise the function returns immediately
+; one trick before calling the function is to force the keyboard not to send data by
+; forcing the CLOCK line low (setting the CLOCK pin to output and writing a low, 
+; this will cause the keyboard to buffer the key scan codes
+; then before a call to this function is made you re-enable the keyboard by setting the 
+; clock line high, that is turning the pin back into an input (it has a weak pullup on it)
+; and the keyboard will start the transmission sequence immediately, a 10uS delay 
+; before the poll begins allows the keyboard to respond to the "clear to send" release 
+
+; the keyboard protocal is simple, for every key pressed there is a "scan code" 
+; referred to as the "make code" that is sent, additionally when every key released 
+; there is another scan code referred to as the "break code" that in most cases is 
+; composed of $EO followed by the original make code scan value, however, many keys 
+; may have multiple make codes and break codes.
+; 
+; the keyboard hardware interface is either a 5-pin DIN or a 6-pin mini-DIN connector, the 6-pin mini
+; din has the following pinout from the computer's female side:
+;
+; Female PS2 6-Pin Mini Din Connector at computer socket
+
+;   /------------\
+;  /              \
+;  |      xx      |
+;  |   6  xx  5   |
+;  |              |
+;  |  4        3  |
+;  |     2  1     |
+;  \              /
+;   \------------/
+;    
+;  1 - DATA (bi-directional open collector).
+;  2 - NC.
+;  3 - GROUND.
+;  4 - VCC (+5 @ 100 mA).
+;  5 - CLOCK.
+;  6 - NC.
+; 
+; DATA is bi-directional and used to send and receive data.
+; CLOCK is bi-directional, however, the keyboard always controls it. 
+; the host can pull the CLOCK line low though to inhibit transmissions, 
+; additionally during host -> keyboard communications the CLOCK line is used
+; as a request to send line of sorts to initiate the host -> keyboard transmission.
+;
+; Note: this function only reads from the keyboard, its possible to send commands as well
+; however this function doesn't support it.
+;
+; communication protocal from keyboard to host
+; when a key is sent from the keyboard to the host computer, it is clocked out
+; by the keyboard in an 11-bit packet, the packet looks like this:
+;
+;
+;       ----|     |----|     |----|     |----|     |----|     |----|     |----|     |----|     |----|     |----|     |----|     |
+;CLOCK      |_____|    |_____|    |_____|    |_____|    |_____|    |_____|    |_____|    |_____|    |_____|    |_____|    |_____|    
+;
+;       ----|     |-/////\\\\\-/////\\\\\-/////\\\\\-/////\\\\\--/////\\\\\-/////\\\\\-/////\\\\\-/////\\\\\-/////\\\\\-----------
+;DATA       |_____|-\\\\\/////-\\\\\/////-\\\\\/////-\\\\\/////--\\\\\/////-\\\\\/////-\\\\\/////-\\\\\/////-\\\\\/////
+;
+;           start(0)  data 0     data 1     data 2     data 3      data 4     data 5     data 6     data 7     parity    stop (1)
+;
+; data should be sampled by the host computer on the data line on the falling edge of the CLOCK line (driven by keyboard)
+;
+;
+; Algorithm
+; Step 1: Delay 5 us, allow caller's hold on CLOCK line to release and keyboard to send bufferred scan code
+; Step 2: if both CLOCK and DATA are low (start bit) then enter into loop, else return
+; 
+; Step 3: wait until clock goes high...
+
+; Step 4: read data bits loop
+
+; for t = 0 to t <= 7 do 
+;     wait for CLOCK to go low...
+;     delay 5 us to center sample
+;     bit(t) = DATA
+;     next t
+
+
+; test if CLOCK and DATA are low signifying a START bit
+:KBD_Wait_Clock_Low
+
+	snb 	KBD_PORT.KBD_CLOCK
+	jmp 	:KBD_Wait_Clock_Low	; wait for CLOCK=0
+
+; CLOCK=0, verify start bit, i.e. DATA=0
+	; delay into signal 5.0 us to get solid sample
+	;DELAY(CLK_SCALE * 50)
+	snb 	KBD_PORT.KBD_DATA
+	ret	; DATA is high return
+
+
+; CLOCK=0 and DATA=0, therefore start bit detected, data is now being streamed at 10 - 16.7Khz, or 60-100us clock cycles
+
+; now sync to high clock pulse
+:KBD_Wait_Clock_High
+
+	sb 	KBD_PORT.KBD_CLOCK
+	jmp 	:KBD_Wait_Clock_High	; wait for CLOCK=1
+
+; CLOCK=1 and DATA=0, therefore start bit detected, data is now being streamed at 10 - 16.7Khz, or 60-100us clock cycles
+:KBD_Init_Read_Loop
+
+	clr	kbddata			; clear the data storage
+	clc				; make sure carry is clear 
+	mov	kbdcounter, #8		; read 8-bits
+
+:KBD_Next_Bit
+	; at entrance to this loop, we are in the high phase of the clock, wait for the low transition then sample...
+
+	; wait for CLOCK to go low
+
+:KBD_Wait_Clock_Low2
+
+	snb 	KBD_PORT.KBD_CLOCK
+	jmp 	:KBD_Wait_Clock_Low2	; wait for CLOCK=0
+
+	; the clock is now low
+	; center sampling point 5.0 us into DATA bit
+	;DELAY (CLK_SCALE * 50)
+
+	; sample data on DATA line and shift into position
+	movb 	kbddata.7, KBD_PORT.KBD_DATA		
+	rr	kbddata
+
+	; clock is still low, wait for high transition
+
+:KBD_Wait_Clock_High2
+
+	sb 	KBD_PORT.KBD_CLOCK
+	jmp 	:KBD_Wait_Clock_High2	; wait for CLOCK=1
+	
+	; loop 8 times
+	djnz	kbdcounter, :KBD_Next_Bit
+
+	; we overshifted one bit, restore
+	rl 	kbddata
+
+
+	; disregard parity and stop bit for now
+
+; ///////////////////////////////////////////////////////////////////////////
+
+; Place a BREAK POINT HERE to see the incoming MAKE codes in the debugger
+; After pressing a key on the keyboard the make code will show up in  "kbddata"
+
+; ///////////////////////////////////////////////////////////////////////////
+
+	;break
+
+	; kbddata holds keyboard scan code
+	ret
+
+; ////////////////////////////////////////////////////////////////////////////
+
+
+; ////////////////////////////////////////////////////////////////////////////
+
+
+; ////////////////////////////////////////////////////////////////////////////
+
+; /////////////////////////////////////////////////////////////////////////////
+;  Begin program after restart
+; /////////////////////////////////////////////////////////////////////////////
+
+	org	$80
+Start		
+
+	bank	#$20
+
+	; let hardware initialize...
+	call	Delay64K	;delay					
+
+	; set KBD port to input
+	mov	w, #$1F		        ; Set mode register to write direction register
+	mov	m,w
+	mov	KBD_PORT, #%11111111	; Set port KBD output latch to 1's
+	mov	!KBD_PORT,#%11111111	; Set port KBD direction to input
+
+	; enable pullups on KBD port
+	mov	w, #$1E		        ; Set mode register to write pullup resistor
+	mov	m,w
+	mov	!KBD_PORT,#%00000000	; Set KBD port pullups on (0=on, 1=off)
+
+	; set data port to output with 0's
+	mov	w, #$1F			; Set mode register to write direction register
+	mov	m,w
+	mov	DATA_PORT, #%00000000	; Set data port output latch to zero
+	mov	!DATA_PORT,#%00000000  	; Set data port direction to output
+
+Main	
+	; inhibit keyboard from sending to show it will buffer keys until we want them...
+	SET_KBD_PORT_OUTPUT	
+	clrb 	KBD_PORT.KBD_CLOCK
+
+	; delay a while (could be an hour, this shows that you can buffer the key as long as you want)
+	REPT 1
+	call	Delay64K	;delay					
+	ENDR
+
+	; allow keyboard to send by releasing the clock line
+	setb 	KBD_PORT.KBD_CLOCK
+	SET_KBD_PORT_INPUT	
+
+	; call driver to try and fetch key...
+	call 	ReadKBD
+
+	mov	DATA_PORT, kbddata	; store W into RC
+
+	jmp	Main			; goto main				
+
+

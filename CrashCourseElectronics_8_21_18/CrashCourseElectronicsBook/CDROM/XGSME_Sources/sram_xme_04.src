@@ -1,0 +1,560 @@
+; /////////////////////////////////////////////////////////////////////////////
+;
+; SRAM_XME_04.SRC - SRAM Test Suite for new memory achitecture supporting
+; 4-bit lower addressing, with shift register 12 bit page, and bank bit
+; 
+; /////////////////////////////////////////////////////////////////////////////
+
+
+; /////////////////////////////////////////////////////////////////////////////
+; Set device attributes
+; /////////////////////////////////////////////////////////////////////////////
+
+	DEVICE	SX52
+	RESET	Start
+	FREQ 	80_000_000 	; this is a directive to the ide only
+			  	; if you want to put the XGS ME into RUN mode
+			  	; you must make sure you go into the 
+				; device settings and make sure that
+				; HS3 is enabled, and crystal drive and
+				; feedback are disabled and then re-program
+				; the chip in PGM mode and then switch it to RUN
+
+	DEVICE		OSCHS3			; High-speed external oscillator
+	DEVICE		IFBD			; Crystal feedback disabled
+	DEVICE		XTLBUFD			; Crystal drive disabled
+	DEVICE		CARRYX			; enable carry in add, sub
+
+
+; /////////////////////////////////////////////////////////////////////////////
+; Defines
+; /////////////////////////////////////////////////////////////////////////////
+
+SRAM_PORT_CONTROL_MASK	equ	%11110000	
+SRAM_PORT_ADDR_MASK	equ	%00001111	
+
+; clock active high
+SRAM_PORT_CLK_1		equ	%00010000	
+SRAM_PORT_CLK_0		equ	%00000000	
+
+; address data 16-bit serial
+SRAM_PORT_ADATA_MASK	equ	%00100000
+SRAM_PORT_ADATA_1	equ	%00100000
+SRAM_PORT_ADATA_0	equ	%00000000
+
+; chip enable active low
+SRAM_PORT_CE_1		equ	%01000000	
+SRAM_PORT_CE_0		equ	%00000000	
+
+; read/write line always active high or low
+SRAM_PORT_READ		equ	%10000000
+SRAM_PORT_WRITE		equ	%00000000
+
+; /////////////////////////////////////////////////////////////////////////////
+; Global variables
+; /////////////////////////////////////////////////////////////////////////////
+
+		org $10
+MainBank
+
+Count1		ds	1	; general counter
+Count2		ds	1	; general counter
+index1		ds	1	; loop index
+
+; general addressing registers
+addr_word	ds	1	; generic word address
+addr_lo		ds	1	; generic low byte address
+addr_hi		ds	1	; generic high byte address
+
+; general 
+data8		ds	1	; 8-bit data
+data16		ds	1	; 16-bit data (includes data8:data16)
+temp1		ds	1	; temporary storage
+temp2		ds	1	; temporary storage
+
+; /////////////////////////////////////////////////////////////////////////////
+; Macros
+; /////////////////////////////////////////////////////////////////////////////
+
+DELAY MACRO clocks
+; runs delay code the sent number of "clocks"
+
+; first compute fractional remainder of 10 and delay
+IF ((clocks // 10) > 0)
+
+;	REPT (clocks // 10)
+;	NOP
+;	ENDR
+
+; first 3 clock chunks6
+	REPT ((clocks // 10)/3)
+	JMP $ + 1
+		ENDR
+
+; now the remainder if any
+
+	REPT ((clocks // 10)//3)
+	NOP
+	ENDR
+ENDIF
+
+; last compute whole multiples of 10, and delay
+IF ((clocks/10) >= 1)
+
+; delay 10*(clocks/10)
+	mov counter, #(clocks/10) 	; (2)
+:Loop					
+	jmp $ + 1			; (3)
+	jmp $ + 1			; (3)
+	djnz counter, :Loop		; (4/2)
+
+ENDIF
+
+ENDM
+
+; /////////////////////////////////////////////////////////////////////////////
+; Data watches
+; /////////////////////////////////////////////////////////////////////////////
+
+	WATCH	addr_lo, 16,UBIN
+	WATCH	data8, 8,UBIN
+	WATCH	addr_word, 8,UBIN
+	WATCH	data16, 8,UBIN
+
+; /////////////////////////////////////////////////////////////////////////////
+; Subroutines
+; /////////////////////////////////////////////////////////////////////////////
+
+	; place subroutines at $0
+	org $0
+
+	bank MainBank
+
+; ////////////////////////////////////////////////////////////////////////////
+
+; 64K cycle delay for large delays
+Delay64K		
+	clr	Count1  	;Initialize Count1, Count2	
+	clr	Count2							
+
+Loop	djnz	Count1,loop	;Decrement until all are zero		
+	djnz	Count2,loop						
+	ret			;then return				
+
+; ////////////////////////////////////////////////////////////////////////////
+
+Write_SRAM
+
+; this function writes a byte to the SRAM, note that there are timing delays 
+; in the code, these delays are generalized and can be much smaller, rule of thumb 
+; is that the SRAMs are 12-15ns access time, that means that they can be accessed 
+; at full speed without any delay code, however I have placed the delays in the 
+; code for setup, hold, and accessing in case we end up using really slow memory 70-100ns 
+; in the final design. The only problem though is that the shift registers may not be 
+; able to keep up with the clocking, the shift registers are 74HC164 and are spec'ed 
+; to run at 60 mhz max that means 50 mhz for safety thus, we don't want to shift 
+; the data faster than 50 Mhz, so that ironically becomes the bottleneck for the SRAM!
+; currently I have the delays all set to 2 clocks this should work up to 80 Mhz 
+; before the system goes to fast if you find the SRAM access destabilizing at 80+ Mhz, 
+; increase the delays to 3-4 clocks
+
+
+; parameters on entry
+; address consists of 17-bits total
+; bit A16 = bank, controls upper or lower bank of 64K
+; bits A15-A4 = page address, controls which 16-byte page is accessed in bank
+; there are 4096 pages addresses by the 12 addresses lines A15-A4
+; bits A3-A0 are the byte in the page of SRAM, 16 bytes, 0-15 addressed by A3-A0
+;
+; SRAM is accessed by shifting the page into the shift registers, setting the bank to
+; upper or lower, and then applying the 4-bit byte address and accessing memory
+; hence within a page, you can simply change the lower 4-bit byte address which is 
+; directly connected to RC0-RC3 (and of course performing the correct control pattern
+; to the SRAM for read/write).
+; this routine doesn't care about this optimization and simple addresses the memory
+; completely each time based on the sent address parms
+;
+;
+;
+;| A16 | A15 | A14 | A13 | A12 | A11 | A10 | A9 | A8 | A7 | A6 | A5 | A4 | A3 | A2 | A1 | A0
+;   ^     ^                                                            ^   ^               ^
+;   |     |____________________________________________________________|   |_______________|
+;   |     |                                                                |                  
+;   |     |                                                              4-bit byte address (0-15 bytes per page) (RC3-RC0)
+;   |     |
+;   |   12 bit Page Address, shifted into shift registers (4096 pages of 16 bytes)
+;   |
+;   |
+;SRAM_BANKSEL (RA7)
+;
+
+; addr_word - 4-bit word address of byte in page (0-15)
+; addr_lo   - low 8-bits of address (page)
+; addr_hi   - high 4-bits of address (page)
+; data8     - byte to write
+
+; control lines from SX52
+
+; RC0 -> SRAM_A0, address line 0
+; RC1 -> SRAM_A1, address line 1
+; RC2 -> SRAM_A2, address line 2
+; RC3 -> SRAM_A3, address line 3
+
+
+; RC4 -> SRAM_CLK, used to clock the serial address shift registers
+; RC5 -> SRAM_DATAIN, serial input to the serial address shift registers
+; RC6 -> /SRAM_CE, connected to the chip enable of the SRAM, active low
+; RC7 -> SRAM_RD_/WR, selects read or write mode of the SRAM, read=0, write=1
+; RA7 -> SRAM_BANKSEL, selects the lower 64K or upper 64K bank of SRAM, 0=lower bank, 1=upper bank
+
+
+	; step 1: place address into lower 4-bits of W
+	mov	W, addr_word
+	
+	; step 2: prepare for write	
+	or	W,#(SRAM_PORT_ADATA_0 | SRAM_PORT_CLK_0 | SRAM_PORT_CE_1 | SRAM_PORT_WRITE)	
+	mov	RC, W		; Output control and word address within page 
+
+	; place data on data bus
+	mov	 RD, data8	;Set port D output latch to data
+	mov	!RD, #%00000000 ;Set port D[7:0] to output direction
+
+	; step 3: shift address into address buffers
+
+	; shift 12-bits of page address into latch
+
+	mov 	Count1, #12	; 12 bits per address
+
+:Send_Addr_Bit_Loop
+
+	clrb 	RC.4		; set SRAM_CLK = 0
+
+	; read next bit in page address stream
+
+	sb 	addr_hi.3	; jump over if set
+	jmp 	:SRAM_BIT_Zero
+
+	; bit set, write 1 to SRAM address in bit
+
+	setb 	RC.5 		; SRAM_DATAIN = 1
+	jmp	:SRAM_Bit_Setup
+
+:SRAM_Bit_Zero
+
+	; bit clear, write 0 to SRAM_DATAIN
+
+	clrb 	RC.5 		; SRAM_DATAIN = 0
+
+:SRAM_Bit_Setup
+
+	DELAY(2)		; setup time for data
+
+	setb 	RC.4		; set SRAM_CLK = 1
+
+	DELAY(2)		; hold time
+
+	; shift next address bit into position
+	; shift data thru carry, shift carry into address
+	; shift address over and next bit into position 7 for reading
+
+	rl 	addr_lo
+	rl 	addr_hi
+		
+	djnz 	Count1, :Send_Addr_Bit_Loop
+
+
+	rl 	addr_lo
+	rl 	addr_hi
+
+	; extra shifts to re-align, so address isn't destroyed
+	rl 	addr_lo
+	rl 	addr_hi
+
+	rl 	addr_lo
+	rl 	addr_hi
+
+	rl 	addr_lo
+	rl 	addr_hi
+
+	rl 	addr_lo
+	rl 	addr_hi
+
+	; step 4: write data, 
+
+	; data is now shifted into address latch , set clock to 0, write data
+	clrb 	RC.4		; set SRAM_CLK    = 0
+	clrb	RC.7		; set SRAM_RD_/WR = 0, write mode
+	clrb	RC.6		; set /SRAM_CE    = 0, enable
+
+	DELAY(2)		; hold time
+
+	setb	RC.6		; set /SRAM_CE    = 1, disable
+
+	; sram write complete, leave port as is, incase of another write
+	; sram is disabled, clock is down, write mode
+
+	ret
+
+; ////////////////////////////////////////////////////////////////////////////
+
+Read_SRAM
+
+; this function reads a byte from the SRAM, note that there are timing delays 
+; in the code, these delays are generalized and can be much smaller, rule of thumb 
+; is that the SRAMs are 12-15ns access time, that means that they can be accessed 
+; at full speed without any delay code, however I have placed the delays in the 
+; code for setup, hold, and accessing in case we end up using really slow memory 70-100ns 
+; in the final design. The only problem though is that the shift registers may not be 
+; able to keep up with the clocking, the shift registers are 74HC164 and are spec'ed 
+; to run at 60 mhz max that means 50 mhz for safety thus, we don't want to shift 
+; the data faster than 50 Mhz, so that ironically becomes the bottleneck for the SRAM!
+; currently I have the delays all set to 2 clocks this should work up to 80 Mhz 
+; before the system goes to fast if you find the SRAM access destabilizing at 80+ Mhz, 
+; increase the delays to 3-4 clocks
+
+
+; parameters on entry
+; address consists of 17-bits total
+; bit A16 = bank, controls upper or lower bank of 64K
+; bits A15-A4 = page address, controls which 16-byte page is accessed in bank
+; there are 4096 pages addresses by the 12 addresses lines A15-A4
+; bits A3-A0 are the byte in the page of SRAM, 16 bytes, 0-15 addressed by A3-A0
+;
+; SRAM is accessed by shifting the page into the shift registers, setting the bank to
+; upper or lower, and then applying the 4-bit byte address and accessing memory
+; hence within a page, you can simply change the lower 4-bit byte address which is 
+; directly connected to RC0-RC3 (and of course performing the correct control pattern
+; to the SRAM for read/write).
+; this routine doesn't care about this optimization and simple addresses the memory
+; completely each time based on the sent address parms
+;
+;
+;
+;| A16 | A15 | A14 | A13 | A12 | A11 | A10 | A9 | A8 | A7 | A6 | A5 | A4 | A3 | A2 | A1 | A0
+;   ^     ^                                                            ^   ^               ^
+;   |     |____________________________________________________________|   |_______________|
+;   |     |                                                                |                  
+;   |     |                                                              4-bit byte address (0-15 bytes per page) (RC3-RC0)
+;   |     |
+;   |   12 bit Page Address, shifted into shift registers (4096 pages of 16 bytes)
+;   |
+;   |
+;SRAM_BANKSEL (RA7)
+;
+
+; addr_word - 4-bit word address of byte in page (0-15)
+; addr_lo   - low 8-bits of address (page)
+; addr_hi   - high 4-bits of address (page)
+; data8     - holds result on exit
+
+; control lines from SX52
+
+; RC0 -> SRAM_A0, address line 0
+; RC1 -> SRAM_A1, address line 1
+; RC2 -> SRAM_A2, address line 2
+; RC3 -> SRAM_A3, address line 3
+
+
+; RC4 -> SRAM_CLK, used to clock the serial address shift registers
+; RC5 -> SRAM_DATAIN, serial input to the serial address shift registers
+; RC6 -> /SRAM_CE, connected to the chip enable of the SRAM, active low
+; RC7 -> SRAM_RD_/WR, selects read or write mode of the SRAM, read=0, write=1
+; RA7 -> SRAM_BANKSEL, selects the lower 64K or upper 64K bank of SRAM, 0=lower bank, 1=upper bank
+
+	; step 1: place address into lower 4-bits of W
+	mov	W, addr_word
+
+	; step 2: prepare for read
+
+	or	W,#(SRAM_PORT_ADATA_0 | SRAM_PORT_CLK_0 | SRAM_PORT_CE_1 | SRAM_PORT_READ)	
+	mov	RC, W
+
+	; place data bus into read mode
+	mov	 RD, #%00000000 ;Set port D output latch to data to 0, even though we are going to read
+	mov	!RD, #%11111111 ;Set port D[7:0] to input direction
+
+	; step 3: shift address into address buffers
+
+	; shift 12-bits of address into page address latch
+
+	mov 	Count1, #12	; 12 bits per page address
+
+:Send_Addr_Bit_Loop
+
+	clrb 	RC.4		; set SRAM_CLK = 0
+
+	; read next bit in address stream
+
+	sb 	addr_hi.3	; jump over if set
+	jmp 	:SRAM_BIT_Zero
+
+	; bit set, write 1 to SRAM address in bit
+
+	setb 	RC.5 		; SRAM_DATAIN = 1
+	jmp	:SRAM_Bit_Setup
+
+:SRAM_Bit_Zero
+
+	; bit clear, write 0 to SRAM_DATAIN
+
+	clrb 	RC.5 		; SRAM_DATAIN = 0
+
+:SRAM_Bit_Setup
+
+	DELAY(2)		; setup time for data
+
+	setb 	RC.4		; set SRAM_CLK = 1
+
+	DELAY(2)		; hold time
+
+	; shift next address bit into position
+	; shift data thru carry, shift carry into address
+	; shift address over and next bit into position 7 for reading
+
+	rl 	addr_lo
+	rl 	addr_hi
+		
+	djnz 	Count1, :Send_Addr_Bit_Loop
+
+	rl 	addr_lo
+	rl 	addr_hi
+
+	; re-align, so address isn't destroyed
+	rl 	addr_lo
+	rl 	addr_hi
+
+	rl 	addr_lo
+	rl 	addr_hi
+
+	rl 	addr_lo
+	rl 	addr_hi
+
+	rl 	addr_lo
+	rl 	addr_hi
+
+	; step 4: read data
+
+	; data is now shifted into address latch , set clock to 0, read data
+	clrb 	RC.4		; set SRAM_CLK = 0
+	setb	RC.7		; set SRAM_RD_/WR = 1, read mode
+	clrb	RC.6		; set /SRAM_CE = 0, enable
+
+	DELAY(2)		; hold time
+
+	mov	data8, RD	; read the data into data bus
+
+	DELAY(2)		; hold time
+
+	setb	RC.6		; set /SRAM_CE = 1, disable
+
+	; sram read complete, leave port as is.
+	; results in data8, leave SRAM in read mode, disabled, clock low
+
+	ret
+
+; /////////////////////////////////////////////////////////////////////////////
+;  Program begins here after restart
+; /////////////////////////////////////////////////////////////////////////////
+
+	org	$80
+Start		
+
+	bank	MainBank		; set bank, so we can access our globals
+		
+	; port B[7:0] used for indicator lights, set to all output
+	mov	 RB, #%00000000	;Set port B output latch to zero
+	mov	!RB, #%00000000	;Set port B direction to output
+
+	; port C[7:4] used for SRAM control bus, C[3:0] used for lower page byte address
+	mov	 RC, #(SRAM_PORT_ADATA_0 | SRAM_PORT_CLK_0 | SRAM_PORT_CE_1 | SRAM_PORT_WRITE)	;Set port C output latch to 11110000
+	mov	!RC, #%00000000 ;Set port C[7:4] direction to output, C[3:0] to outputs as well
+
+	; port D[7:0] used for SRAM data bus
+	mov	 RD, #%00000000 ;Set port D output latch to 00000000
+	mov	!RD, #%00000000 ;Set port D direction to output
+
+	; port A[7] SRAM_BANKSEL
+	mov	RA, #%11111111
+	mov	!RA, #%00000100
+
+	mov	Count1, #0
+	mov	Count2, #0
+
+Main		
+
+; this little code demo writes a single value and then reads it back, there are 3 versions, each writes a different
+; value to memory at a specific bank (0-1), page (0-4095), word (0-15)
+
+	; write a single SRAM loc
+	mov	data8,   #%11111111	; data to write
+	
+	mov	addr_word, #%00000001	; 4-bit lower address
+
+	mov	addr_lo, #%00000000	; 12-bit page
+	mov	addr_hi, #%00001000
+
+	call 	Write_SRAM
+
+	; read a single SRAM loc
+	mov	data8,   #%00000000
+
+	mov	addr_word, #%00000001	; 4-bit lower address
+	mov	addr_lo, #%00000000	; 12-bit page
+	mov	addr_hi, #%00001000
+
+	call 	Read_SRAM
+
+        ; TEST POINT 1
+        ; data8 should equal #%11111111
+
+; /////////////////////////////////////////////////////////////////////////////
+
+	; write a single SRAM loc
+	mov	data8,   #%00000000	; data to write
+	
+	mov	addr_word, #%00000001	; 4-bit lower address
+
+	mov	addr_lo, #%00000000	; 12-bit page
+	mov	addr_hi, #%00001000
+
+	call 	Write_SRAM
+
+	; read a single SRAM loc
+	mov	data8,   #%00000000
+
+	mov	addr_word, #%00000001	; 4-bit lower address
+	mov	addr_lo, #%00000000	; 12-bit page
+	mov	addr_hi, #%00001000
+
+	call 	Read_SRAM
+
+        ; TEST POINT 2
+        ; data8 should equal #%00000000
+
+; /////////////////////////////////////////////////////////////////////////////
+
+	; write a single SRAM loc
+	mov	data8,   #%10101010	; data to write
+	
+	mov	addr_word, #%00000001	; 4-bit lower address
+
+	mov	addr_lo, #%00000000	; 12-bit page
+	mov	addr_hi, #%00001000
+
+	call 	Write_SRAM
+	
+	; read a single SRAM loc
+	mov	data8,   #%00000000
+
+	mov	addr_word, #%00000001	; 4-bit lower address
+	mov	addr_lo, #%00000000	; 12-bit page
+	mov	addr_hi, #%00001000
+
+	call 	Read_SRAM
+
+	; TEST POINT 3
+        ; data8 should equal #%10101010
+
+; /////////////////////////////////////////////////////////////////////////////
+
+	jmp Main

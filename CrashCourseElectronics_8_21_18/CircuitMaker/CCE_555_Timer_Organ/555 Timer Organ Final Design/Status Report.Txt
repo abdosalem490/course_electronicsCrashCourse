@@ -1,0 +1,16 @@
+Project Outputs Generation Report
+---------------------------------
+Start Output Generation At 5:29:43 PM On 8/2/2017
+
+Output: NC Drill
+Type  : NC Drill
+From  : PCB Document [555TimerOrganFinal.CMPcbDoc]
+   Generated File[555TimerOrganFinal.TXT]
+   Generated File[555TimerOrganFinal.LDP]
+   Generated File[555TimerOrganFinal.DRR]
+
+
+Files Generated   : 3
+Documents Printed : 0
+
+Finished Output Generation At 5:29:44 PM On 8/2/2017

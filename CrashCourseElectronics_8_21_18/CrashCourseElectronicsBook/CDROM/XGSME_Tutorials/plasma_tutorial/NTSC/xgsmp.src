@@ -1,0 +1,483 @@
+; XGS ME Music Player v04
+; /Mic, 2004
+
+
+MP_CODE_BASE	EQU 	$E00	; Base address for player code, must be even ($000, $200, $400 etc)
+MP_REG_BASE	EQU	$A0	; Base address for player registers, 48 consecutive bytes are used.
+MP_NUM_CHANNELS	EQU	3
+
+
+; Commands
+CMD_NOTE	EQU	$0
+CMD_REST	EQU	$1
+CMD_OCTAVE	EQU	$3
+CMD_VOLUME	EQU	$4
+CMD_WAVEFORM	EQU	$6
+CMD_OCTUP	EQU	$8
+CMD_OCTDOWN	EQU	$9
+CMD_COUNTER	EQU	$A
+CMD_LOOPNZ	EQU	$B
+CMD_JMP		EQU	$C
+CMD_OCUPNOTE	EQU	$D
+CMD_OCDNNOTE	EQU	$E
+
+
+	org MP_REG_BASE
+Count_1		ds	1	; Counter
+Count_2		ds	1	; Counter
+Param1		ds	1	; Parameter 1
+Param2		ds	1	; Parameter 2
+mp_pos_l	ds	1
+mp_pos_h	ds	1
+mp_oct		ds	1
+mp_volnote	ds	1
+mp_cnt1		ds	1
+mp_cnt2		ds	1
+mp_cnt3		ds	1
+mp_waveform	ds	1
+mpReg0		ds	1
+mpReg1		ds	1
+mpReg2		ds	1
+mpReg3		ds	1
+
+
+
+
+
+	org MP_CODE_BASE
+
+
+SoundCommand
+
+	; Name:		"SoundCommand"
+	; Description:	Send a command to the sound processor.
+	
+;	mov 	RA, #0 		; clear RA first
+
+	mov 	Count_1, #11	; 11 bits per command
+
+:Send_Bit_Command_Loop
+
+	clrb	RA.SCLK_BIT
+
+	; read next bit in command stream
+	sb 	Param1.2	; jump over if set
+	jmp 	:Bit_Command_Zero
+
+	; bit set, write 1 to SDATA
+	setb 	RA.SDATA_BIT 	; SDATA = (1)
+
+	jmp	:Bit_Command_Setup
+
+:Bit_Command_Zero
+
+	; bit clear, write 0 to SDATA
+	clrb 	RA.SDATA_BIT 	; SDATA = (0)
+
+:Bit_Command_Setup
+
+;	DELAY( CLK_SCALE * 2 )	; setup time for data
+	iread
+	iread
+	iread
+	iread
+
+	setb 	RA.SCLK_BIT	; SCLK = (1)
+
+;	DELAY( CLK_SCALE * 2 )	; wait 200ns+
+	iread
+	iread
+	iread
+	iread
+
+	; shift next bit into position
+	; shift data thru carry, shift carry into address
+	; shift address over and next bit into position 2 for reading
+	rl 	Param2
+	rl 	Param1
+		
+	djnz 	Count_1, :Send_Bit_Command_Loop
+
+	clrb	RA.SCLK_BIT	; SCLK = (0)
+	DELAY( CLK_SCALE * 2 )	; wait 200ns+
+	setb 	RA.SSTB_BIT 	; strobe BU673 SSTB line
+	DELAY( CLK_SCALE * 2 )	; wait 200ns+
+	clrb 	RA.SSTB_BIT	; zero BU673 SSTB line
+
+	; All done
+
+	retp
+
+
+
+; In: 10=pos_l, 11=pos_h
+XgsMpInit
+	mov	RA, #%01000000			; Set port A output latch to zero
+	mov	!RA,#%00000100			; Set port A directions
+	_bank 	MP_REG_BASE
+	mov 	W,M
+	mov	15,W
+
+	mov	13,10
+	mov	14,11
+	mov	Count_1,#MP_NUM_CHANNELS
+init_channel
+	mov	M,14
+	mov	W,13
+	iread
+	mov	mp_pos_l,W			; Start address (low) 
+	mov 	W,M
+	mov	mp_pos_h,W 			; Start address (high)
+
+	clr	mp_oct
+	mov	mp_volnote,#$70			; Volume 7 (silent), note 0
+
+	add	13,#6
+	snc
+	inc	14
+	mov	M,14
+	mov	W,13
+	iread
+	mov	mp_cnt1,W			; Tempo
+
+	mov	mp_cnt2,#1
+	clr	mp_waveform
+	clr	mpReg3
+
+	mov 	12,Count_1
+	add 	fsr,#$10
+	mov 	Count_1,12
+	add	10,#1
+	snc
+	inc	11
+	mov	13,10
+	mov	14,11
+	djnz	Count_1,init_channel
+
+	mov 	W,15
+	mov	M,W
+	retp
+
+
+
+; In: 10=pos_l, 11=pos_h
+XgsMpUpdate
+	;mov	RA, #%01000000			; Set port A output latch to zero
+	;mov	!RA,#%00000100			; Set port A directions
+
+	_bank MP_REG_BASE
+	
+	clr Count_1
+
+	mov 12,10
+	mov 13,11
+	add 12,#6
+	snc
+	inc 13
+	mov M,13
+	mov W,12
+	iread
+	mov Count_2,W ;#CHN1_TEMPO
+	;mov Param1,#CHN1_LOOP_L
+	;mov Param2,#CHN1_LOOP_H
+
+	mov 12,10
+	mov 13,11
+	add 12,#3
+	snc
+	inc 13
+	mov M,13
+	mov W,12
+	iread
+	mov Param1,W
+	mov W,M
+	mov Param2,W
+
+channel_loop
+	;mov mpReg3,#$00
+
+	decsz mp_cnt1
+	jmp chn_no_update
+	mov mp_cnt1,Count_2
+	decsz mp_cnt2
+	jmp chn_no_update
+MpUpdateReadCmd
+	mov M,mp_pos_h			; 2
+	mov W,mp_pos_l			; 1
+	iread				; 4
+	mov mpReg0,W			; 1
+	mov W,M				; 1
+	mov mpReg1,W
+
+	INC_8_8 mp_pos_h,mp_pos_l
+
+	and mpReg1,#$F
+	jnz TryCmd0D			; 4 / 2
+	jmp Cmd00
+TryCmd0D
+	cjne mpReg1,#CMD_OCUPNOTE,TryCmd0E
+	add mp_oct,#12
+	jmp Cmd00
+TryCmd0E
+	cjne mpReg1,#CMD_OCDNNOTE,TryCmd03
+	sub mp_oct,#12
+Cmd00
+	; Command 00: Play note
+	setb mpReg3.0
+	clrb mpReg3.1
+
+	mov mpReg2,mpReg0
+	and mpReg2,#$F0
+	cjne mpReg2,#$F0,NoRest
+	setb mpReg3.1
+NoRest
+	mov W,mpReg0
+	and W,#$F
+	mov mp_cnt2,W
+	jnz NoExtraByte
+	mov M,mp_pos_h
+	mov W,mp_pos_l
+	iread
+	mov mp_cnt2,W
+	INC_8_8 mp_pos_h,mp_pos_l
+NoExtraByte
+	and mp_volnote,#$F0
+	rr mpReg0
+	rr mpReg0
+	rr mpReg0
+	rr mpReg0
+	mov W,mpReg0
+	and W,#$F
+	or mp_volnote,W
+
+	jmp MpUpdateDone
+
+TryCmd03
+	cjne mpReg1,#CMD_OCTAVE,TryCmd04
+	; Command 03: Set octave
+	clc
+	mov W,<<mpReg0	
+	mov mpReg0,W
+	add W,mpReg0		; o*4
+	mov mp_oct,W
+	add W,mp_oct		; o*18
+	add mp_oct,W		; o*12
+	jmp MpUpdateReadCmd
+
+TryCmd04
+	cjne mpReg1,#CMD_VOLUME,TryCmd06
+	; Command 04: Set volume
+	and mp_volnote,#$F
+	mov W,mpReg0
+	and W,#7
+	mov mpReg2,W
+	rl mpReg2
+	rl mpReg2
+	rl mpReg2
+	rl mpReg2
+	mov W,mpReg2
+	and W,#$F0
+	or mp_volnote,W 
+	jmp MpUpdateReadCmd
+
+TryCmd06
+	cjne mpReg1,#CMD_WAVEFORM,TryCmd08
+	mov mp_waveform,mpReg0
+	jmp MpUpdateReadCmd
+
+TryCmd08
+	cjne mpReg1,#CMD_OCTUP,TryCmd09
+	; Command 08: Octave up
+	add mp_oct,#12
+	jmp MpUpdateReadCmd
+
+TryCmd09
+	cjne mpReg1,#CMD_OCTDOWN,TryCmd0A
+	; Command 09: Octave down
+	sub mp_oct,#12	
+	jmp MpUpdateReadCmd
+
+TryCmd0A
+	cjne mpReg1,#CMD_COUNTER,TryCmd0B
+	mov W,mpReg0
+	mov mp_cnt3,W
+	jmp MpUpdateReadCmd
+
+TryCmd0B
+	cjne mpReg1,#CMD_LOOPNZ,TryCmd0C
+	dec mp_cnt3
+	snz
+	jmp LcZero
+	sub mp_pos_l,mpReg0
+	sc
+	dec mp_pos_h
+LcZero
+	jmp MpUpdateReadCmd
+
+TryCmd0C
+	cjne mpReg1,#$0C,TryCmd0F
+	; Command 0C: Set position
+	mov	mp_pos_l,Param1
+	mov	mp_pos_h,Param2
+	;add	mp_pos_h,#SONG_PAGE
+	jmp MpUpdateReadCmd
+
+TryCmd0F
+	jmp MpUpdateReadCmd
+MpUpdateDone
+chn_no_update
+
+	add 10,#1
+	snc
+	inc 11
+
+	mov 12,10
+	mov 13,11
+	add 12,#6
+	snc
+	inc 13
+	mov M,13
+	mov W,12
+	iread
+	mov 15,W 
+
+	mov 12,10
+	mov 13,11
+	add 12,#3
+	snc
+	inc 13
+	mov M,13
+	mov W,12
+	iread
+	mov 13,W
+	mov W,M
+	mov 14,W
+
+	inc Count_1
+	cje Count_1,#MP_NUM_CHANNELS,update_finished
+
+	mov 12,Count_1
+	add fsr,#$10
+	mov Count_1,12 ;#1
+	mov Count_2,15 ;#CHN2_TEMPO
+	mov Param1,13 ;#CHN2_LOOP_L
+	mov Param2,14 ;#CHN2_LOOP_H
+	jmp channel_loop	
+update_finished
+
+	mov fsr,#(MP_REG_BASE+$20)
+	; fsr is MP_REG_BASE+$20 at this point (assuming 3 channels)
+
+	; Store some variables in global registers $0a-$0f
+	mov 12,mp_volnote
+	mov 13,mpReg3
+	mov 14,mp_waveform
+	mov 15,mp_oct
+
+	mov 10,#$00
+	sb mpReg3.1
+	setb 10.5	; Enable channel 3
+	add fsr,#$F0
+	sb mpReg3.1
+	setb 10.6	; Enable channel 2
+	add fsr,#$F0
+	sb mpReg3.1
+	setb 10.7	; Enable channel 1
+	mov Param2,10
+	mov Param1,#SND_REG_OPER
+	call SoundCommand
+
+	; Update channel 1	
+	sb mpReg3.0
+	jmp lbl001
+	mov mpReg2,mp_volnote
+	rr mpReg2
+	rr mpReg2
+	rr mpReg2
+	rr mpReg2
+	mov W,mpReg2
+	and W,#7
+	or W,mp_waveform
+	mov Param2,W
+	mov Param1,#SND_REG_MODE
+	call SoundCommand
+lbl001
+
+	; Update channel 2
+	add fsr,#$10
+	sb mpReg3.0
+	jmp lbl002
+	mov mpReg2,mp_volnote
+	rr mpReg2
+	rr mpReg2
+	rr mpReg2
+	rr mpReg2
+	mov W,mpReg2
+	and W,#7
+	or W,#$40
+	or W,mp_waveform
+	mov Param2,W
+	mov Param1,#SND_REG_MODE
+	call SoundCommand
+lbl002
+
+IF MP_NUM_CHANNELS = 3
+	sb 13.0 
+	jmp lbl003
+	mov mpReg2,12 
+	rr mpReg2
+	rr mpReg2
+	rr mpReg2
+	rr mpReg2
+	mov W,mpReg2
+	and W,#7
+	or W,#$80
+	or W,14 
+	mov Param2,W
+	mov Param1,#SND_REG_MODE
+	call SoundCommand
+lbl003
+ENDIF
+
+	; Update channel 1
+	add fsr,#$F0
+	sb mpReg3.0
+	jmp lbl004
+	mov W,mp_volnote
+	and W,#$F
+	add W,mp_oct
+	mov Param2,W
+	mov Param1,#SND_REG_FREQ
+	call SoundCommand
+lbl004
+
+	add fsr,#$10	
+	sb mpReg3.0
+	jmp lbl005
+	mov W,mp_volnote
+	and W,#$F
+	add W,mp_oct
+	or W,#$40
+	mov Param2,W
+	mov Param1,#SND_REG_FREQ
+	call SoundCommand
+lbl005
+
+IF MP_NUM_CHANNELS = 3
+	sb 13.0		; Is the channel enabled?
+	jmp lbl006
+	mov W,12	; mp_volnote 
+	and W,#$F	; Keep note data
+	add W,15	; Add octave 
+	or W,#$80	; Channel 3
+	mov Param2,W
+	mov Param1,#SND_REG_FREQ
+	call SoundCommand
+lbl006
+ENDIF
+
+	retp
+
+
+
+

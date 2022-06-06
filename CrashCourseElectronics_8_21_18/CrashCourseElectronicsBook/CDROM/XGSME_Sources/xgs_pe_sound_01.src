@@ -1,0 +1,164 @@
+
+; /////////////////////////////////////////////////////////////////////////////
+;
+; Source Filename: XGS_PE_SOUND_01.SRC 
+; Description: Pico Edition Sound Demo
+; Generates noise using a software based linear feedback shift register (LFSR)
+; Last Modified: 4.15.2005
+;
+; Last Modified: 4.15.2005
+;
+; Instructions:
+; Run from 10-70 Mhz
+; Try changing the LFSR code algorithm to get different white noise effects
+;
+; /////////////////////////////////////////////////////////////////////////////
+
+; Architecture 3 - Media System
+; 4-bit video drive
+;
+;          Audio  upper 4-bits                    |          Intensity (Luma) lower 4-bits
+;
+; | AUD_ISEL3 | AUD_ISEL2 | AUD_ISEL1 | AUD_ISEL0 | VID_ISEL3 | VID_ISEL2 | VID_ISEL1 | VID_ISEL0 |
+;
+;      b7          b6          b5          b4          b3          b2           b1         b0                                             
+;      
+;
+; The Media Hardware Port Mapping Bits from the SX28
+;
+;Port Bit	XGS PE Bit	Description
+
+; RC0 		VID_ISEL0	Bit 0 of the intensity signal that controls LUMA.
+; RC1 		VID_ISEL1	Bit 1 of the intensity signal that controls LUMA.
+; RC2 		VID_ISEL2  	Bit 2 of the intensity signal that controls LUMA.
+; RC3 		VID_ISEL3 	Bit 3 of the intensity signal that controls LUMA.
+
+; this demo uses these bits, make sure to mask off video bits in a real application!
+
+; RC4 		AUD_ISEL0	Bit 0 of the audio value.
+; RC5  		AUD_ISEL1	Bit 1 of the audio value.
+; RC6  		AUD_ISEL2	Bit 2 of the audio value.
+; RC7  		AUD_ISEL3	Bit 3 of the audio value.
+
+; /////////////////////////////////////////////////////////////////////////////
+; Set device attributes
+; /////////////////////////////////////////////////////////////////////////////
+
+; Set device to SX28, enable external high speed oscillator
+		DEVICE 	SX28L, STACKX, OPTIONX, TURBO
+		IRC_CAL IRC_FAST
+
+		RESET	Start		; set restart vector to start of code
+		FREQ 	10_000_000	; initial frequency
+
+		; use the SX-KEY and Device Clock control to slowly 
+		; change the frequency from 10-70 Mhz and listen as the sound
+		; changes from an "idling engine" to a "running engine"					
+
+; /////////////////////////////////////////////////////////////////////////////
+; Defines
+; /////////////////////////////////////////////////////////////////////////////
+
+NOISE_SEED	EQU 	%10101011
+NOISE_VELOCITY	EQU 	%00000010
+
+; /////////////////////////////////////////////////////////////////////////////
+; Global variables
+; /////////////////////////////////////////////////////////////////////////////
+
+; Variable storage
+count1		EQU	$08	
+count2		EQU	$09
+var_0		EQU	$0A
+var_1		EQU	$0B
+
+; /////////////////////////////////////////////////////////////////////////////
+; Macros
+; /////////////////////////////////////////////////////////////////////////////
+
+; /////////////////////////////////////////////////////////////////////////////
+; Data watches
+; /////////////////////////////////////////////////////////////////////////////
+
+; /////////////////////////////////////////////////////////////////////////////
+;  Begin Program After Restart
+; /////////////////////////////////////////////////////////////////////////////
+
+		ORG $000
+Start		
+		; Initialize I/O controller for Pico Edition A->Input, B->Output, C->Output
+
+		mov	w, #$1F		; Set mode register to write direction register
+		mov	m,w
+
+		mov	 RA, #%00000000	; Set port A output latch to zero
+		mov	!RA, #%00000000	; Set port A direction
+
+		mov	 RC, #%00000000	; Set port C output latch to zero
+		mov	!RC, #%00000000	; Set port C direction
+
+		mov 	!RB, #%11111111 ; Set port B direction 
+		mov	w, #$1E		; Set mode register to write pullup resistor
+		mov	m,w
+		mov	!RB, #%00000000 ; Set joystick inputs pullups on (0=on, 1=off)
+
+; /////////////////////////////////////////////////////////////////////////////
+;  Main Program Loop
+; /////////////////////////////////////////////////////////////////////////////
+	
+Main		
+
+Sound_Test_Init
+		mov var_0, #NOISE_SEED    ; starting seed for linear shift feedback counter
+
+; this implements a software LFSR with a couple feedback taps
+; this was generated totally experimentally, so feel free to try
+; different tap point, operations to the bits, etc.
+; the trick is to keep the sequence "alive" and keep it "random"
+
+Sound_Test_Loop1
+
+		mov var_1, var_0
+
+		rl var_1		; arbitrary 
+		rl var_1
+		
+		xor var_0, var_1	; feedback tap #1
+
+		add var_0, #NOISE_VELOCITY	; add in constant value on top of signal
+
+		mov var_1, var_0	; mask off top 4 bits of noise	
+		and var_1, #$F0
+
+		mov RC, var_1		; output to media port sound channel (upper 4 bits of RC)	
+
+		REPT 1
+		call	delay		; delay to slow down sound
+		ENDR
+
+		jmp Sound_Test_Loop1
+
+; /////////////////////////////////////////////////////////////////////////////
+;  Subroutines
+; /////////////////////////////////////////////////////////////////////////////
+
+; delay function counts 64K counts and returns
+Delay		clr	Count1  	; Initialize Count1, Count2	
+		clr	Count2							
+
+Loop		djnz	Count1,loop	; Decrement until all are zero		
+		djnz	Count2,loop						
+		RET			; then return				
+
+; /////////////////////////////////////////////////////////////////////////////
+;  End Program
+; /////////////////////////////////////////////////////////////////////////////
+
+; /////////////////////////////////////////////////////////////////////////////
+;  Begin Data Section
+; /////////////////////////////////////////////////////////////////////////////
+
+; /////////////////////////////////////////////////////////////////////////////
+;  End Data Section
+; /////////////////////////////////////////////////////////////////////////////
+

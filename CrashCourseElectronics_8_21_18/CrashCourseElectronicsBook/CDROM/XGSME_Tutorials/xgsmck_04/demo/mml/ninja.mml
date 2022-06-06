@@ -1,0 +1,73 @@
+#TITLE		Last Ninja 2 subtune 11
+#COMPOSER	Matt Gray
+#PROGRAMER	mic
+#OCTAVE-REV 	0
+
+
+AB t112		; Set tempo
+
+
+;----------
+; Channel 1
+;----------
+A o3 l16 @1 v6
+A L
+A ee>e<e ebee aeeg+ eeag+
+A f+f+>f+<f+ f+>c+<f+f+ bf+f+a+ f+f+ba+
+A aa>a<a a>e<aa 
+
+A >d<aa>c+ <aa>dc+
+A <ee>e<e ebee aeeg+ eeag+
+A c+c+>c+<c+ c+g+c+c+ f+c+c+f c+c+f+f
+A aa>a<a a>e<aa >d<aa>c+ <aa>dc+
+A <ee>e<e ebee
+
+A aeeg+ eeag+ bb>b<b b>f+<bb
+A >e<bb>d+ <bb>ed+ <c+c+>c+<c+ c+g+c+c+
+A f+c+c+f c+c+f+f aa>a<a a>e<aa >d<aa>c+
+A <aa>dc+ <ee>e<e ebee
+
+A aeeg+ eeag+ bb>b<b b>f+<bb
+A >e<bb>d+ <bb>ed+ <ee>e<e ebee
+A aeeg+ eeag+ f+f+>f+<f+ f+>c+<f+f+
+A bf+f+a+ f+f+ba+ aa>a<a a>e<aa
+
+A >d<aa>c+ <aa>dc+
+A <ee>e<e ebee aeeg+ eeag+
+A ee>e<e ebee
+A aeeg+ eeag+ f+f+>f+<f+ f+>c+<f+f+
+A bf+f+a+ f+f+ba+ aa>a<a a>e<aa
+
+A >d<aa>c+ <aa>dc+
+A <ee>e<e ebee aeeg+ eeag+
+
+A [ee>e<e ebee
+A aeeg+ eeag+ f+f+>f+<f+ f+>c+<f+f+
+A bf+f+a+ f+f+ba+ aa>a<a a>e<aa
+A >d<aa>c+ <aa>dc+
+A <ee>e<e ebee aeeg+ eeag+]2
+
+
+;----------
+; Channel 2
+;----------
+B o3 l16 @0 v5
+B L
+B >g+2..f+g+f+4.c+2&8a2..
+
+B g+ag+4.e4.
+B <b4>f+4g+8e2c+8f+4g+8<b2b8>g+4e8<b4.
+
+B >g+8a8f+1f+4g+8e2c+8f+4g+8<b2b8>g+4e8<b4.
+
+B >g+8a8b1g+2..f+g+f+4.c+2&8a2..
+
+B g+ag+4.e2&8g+2..f+g+f+4.c+2&8a2..
+
+B g+ag+4.e4.<b4
+B [>g+e<bg+>g+e<bg+>g+eg+ag+e<bg+>g+f+c+
+B <a+>g+f+c+<a+>g+f+g+ag+ec+<a+>aec+<a
+B >aec+<a>aeabaec+<a>e<bag+>e<bag+>e<b
+B >ef+e<bag+]2
+
+

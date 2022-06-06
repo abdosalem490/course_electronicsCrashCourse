@@ -1,0 +1,142 @@
+
+CLK_SCALE 	EQU	8	; used to make calling the DELAY macro easier
+				; set this to the frequency / 10,000,000
+; sync and black
+
+BLACK_LEVEL	EQU	(6)			; approx. .3v
+SYNC		EQU	(15*16 + 0)		; no color burst with 0v
+BLACK		EQU	(15*16 + BLACK_LEVEL)	; no color burst with .3v
+
+; reference color burst and 7 colors
+
+COLOR0		EQU	(0*16 + BLACK_LEVEL) 	; This color is NOT valid and should not be used
+COLOR1		EQU	(1*16 + BLACK_LEVEL) 
+COLOR2		EQU	(2*16 + BLACK_LEVEL) 
+COLOR3		EQU	(3*16 + BLACK_LEVEL) 
+COLOR4		EQU	(4*16 + BLACK_LEVEL) 
+COLOR5		EQU	(5*16 + BLACK_LEVEL) 
+COLOR6		EQU	(6*16 + BLACK_LEVEL) 
+COLOR7		EQU	(7*16 + BLACK_LEVEL) 
+COLOR8		EQU	(8*16 + BLACK_LEVEL) 
+COLOR9		EQU	(9*16 + BLACK_LEVEL) 
+COLOR10		EQU	(10*16 + BLACK_LEVEL) 
+COLOR11		EQU	(11*16 + BLACK_LEVEL) 
+COLOR12		EQU	(12*16 + BLACK_LEVEL) 
+COLOR13		EQU	(13*16 + BLACK_LEVEL) 
+COLOR14		EQU	(14*16 + BLACK_LEVEL) 
+COLOR15		EQU	(15*16 + BLACK_LEVEL) ; equivalent to CBURST_OFF and WHITE
+
+CBURST_ON	EQU	(COLOR0-1) 		; Color burst reference color0
+CBURST_OFF	EQU	(15*16 + 5); same as black
+
+DARKGRAY	EQU	(15*16 +  8) 
+GRAY		EQU	(15*16 + 10)
+LIGHTGRAY	EQU	(15*16 + 12)
+WHITE		EQU	(15*16 + 15)
+
+SCREEN_HEIGHT	EQU	192
+
+JOY_PORT_MASK		equ	%00000111 ; mask for bits used by joystick interface from SX52
+
+JOY_PORT_CLK		equ	%00000001 ; clock bit mask
+JOY_PORT_CLK_1		equ	%00000001 ; clock high
+JOY_PORT_CLK_0		equ	%00000000 ; clock low
+
+JOY_PORT_SH_nLD		equ	%00000010 ; joystick serial registers shift or load bit mask
+JOY_PORT_SH_nLD_1	equ	%00000010 ; joystick serial register shift mode
+JOY_PORT_SH_nLD_0	equ	%00000000 ; joystick serial register load mode
+
+JOY_PORT_DATA		equ	%00000100 ; joystick read data bit comes in here each shift
+
+TRIS			equ	$1F ; write direction register
+
+; port defines for SX52 interface
+SCLK_BIT	equ	3
+SDATA_BIT	equ	4
+SSTB_BIT	equ 	5
+
+; sound chip register addresses
+SND_REG_OPER	equ	$00
+SND_REG_MODE	equ	$01
+SND_REG_FREQ	equ	$02
+SND_REG_GAIN	equ	$03
+SND_REG_RES1	equ	$04
+SND_REG_RES2	equ	$05
+SND_REG_RES3	equ	$06
+SND_REG_RES4	equ	$07
+
+; basically the following flags and bit constants are all straight out of the 
+; BU8763v.PDF file that describes the BU8763 chip
+
+; operating flags
+SND_OPER_WAVE1_ON	equ	%10000000
+SND_OPER_WAVE1_OFF	equ	%00000000
+
+SND_OPER_WAVE2_ON	equ	%01000000
+SND_OPER_WAVE2_OFF	equ	%00000000
+
+SND_OPER_WAVE3_ON	equ	%00100000
+SND_OPER_WAVE3_OFF	equ	%00000000
+
+SND_OPER_TNSEL_DTMF	equ	%00010000
+SND_OPER_TNSEL_MELODY	equ	%00000000
+
+SND_OPER_FSEL_DTMF	equ	%00010000
+SND_OPER_FSEL_MELODY	equ	%00000000
+
+SND_OPER_SLEEP_ON	equ	%00000001
+SND_OPER_SLEEP_OFF	equ	%00000000
+
+; mode flags
+SND_MODE_WMODE_WAVE1	equ	%00000000
+SND_MODE_WMODE_WAVE2	equ	%01000000
+SND_MODE_WMODE_WAVE3	equ	%10000000
+
+SND_MODE_FLAVOR_SQUARE	equ	%00000000
+SND_MODE_FLAVOR_SINE	equ	%00100000
+
+SND_MODE_ENVON_OFF	equ	%00000000
+SND_MODE_ENVON_ON	equ	%00010000
+
+SND_MODE_ENVM_SLOW	equ	%00000000
+SND_MODE_ENVM_FAST	equ	%00001000
+
+SND_MODE_ATTN_0_0DB	equ	%00000000
+SND_MODE_ATTN_2_5DB	equ	%00000001
+SND_MODE_ATTN_6_0DB	equ	%00000010
+SND_MODE_ATTN_8_5DB	equ	%00000011
+SND_MODE_ATTN_12_0DB	equ	%00000100
+SND_MODE_ATTN_14_5DB	equ	%00000101
+SND_MODE_ATTN_18_0DB	equ	%00000110
+SND_MODE_ATTN_24_0DB	equ	%00000111
+SND_MODE_ATTN_MASK	equ	%00000111
+
+; frequency flags
+SND_FREQ_WAVE1		equ	%00000000
+SND_FREQ_WAVE2		equ	%01000000
+SND_FREQ_WAVE3		equ	%10000000
+
+SND_FREQ_MASK		equ	%00011111
+
+; gain flags
+SND_GAIN_VOLUME_0DB	equ	%00000000
+SND_GAIN_VOLUME_2DB	equ	%00000001
+SND_GAIN_VOLUME_4DB	equ	%00000010
+SND_GAIN_VOLUME_6DB	equ	%00000011
+SND_GAIN_VOLUME_8DB	equ	%00000100
+SND_GAIN_VOLUME_10DB	equ	%00000101
+SND_GAIN_VOLUME_12DB	equ	%00000110
+SND_GAIN_VOLUME_14DB	equ	%00000111
+SND_GAIN_VOLUME_MASK	equ	%00001111
+
+org $0A			 ; Global register bank (8 bytes)
+counter		ds 	1 ; general counter, used in the DELAY macro
+counter2	ds 	1 ; general counter, used in the DELAY macro
+counter3	ds	1 ; general counter, used in scanline overscan
+counter4	ds 	1 ; general counter, free
+joystick2	ds	1 ; output status of joystick #2
+joystick1	ds	1 ; output status of joystick #1
+
+; NOTE
+; A variable 'overscan_color' MUST EXIST in the game and must be in the current bank 
+; when any video macro is used

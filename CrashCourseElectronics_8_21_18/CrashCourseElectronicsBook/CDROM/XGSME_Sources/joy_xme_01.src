@@ -1,0 +1,270 @@
+; /////////////////////////////////////////////////////////////////////////////
+;
+; JOY_XME_01.SRC - Joystick Test Suite  
+;
+; /////////////////////////////////////////////////////////////////////////////
+
+
+
+; /////////////////////////////////////////////////////////////////////////////
+; Set device attributes
+; /////////////////////////////////////////////////////////////////////////////
+
+	DEVICE	SX52
+	RESET	Start
+	FREQ 	80_000_000 	; this is a directive to the ide only
+			  	; if you want to put the XGS ME into RUN mode
+			  	; you must make sure you go into the 
+				; device settings and make sure that
+				; HS3 is enabled, and crystal drive and
+				; feedback are disabled and then re-program
+				; the chip in PGM mode and then switch it to RUN
+
+	DEVICE		OSCHS3			; High-speed external oscillator
+	DEVICE		IFBD			; Crystal feedback disabled
+	DEVICE		XTLBUFD			; Crystal drive disabled
+
+
+; /////////////////////////////////////////////////////////////////////////////
+; Defines
+; /////////////////////////////////////////////////////////////////////////////
+
+JOY_PORT_MASK		equ	%00000111 ; mask for bits used by joystick interface from SX52
+
+JOY_PORT_CLK		equ	%00000001 ; clock bit mask
+JOY_PORT_CLK_1		equ	%00000001 ; clock high
+JOY_PORT_CLK_0		equ	%00000000 ; clock low
+
+JOY_PORT_SH_nLD		equ	%00000010 ; joystick serial registers shift or load bit mask
+JOY_PORT_SH_nLD_1	equ	%00000010 ; joystick serial register shift mode
+JOY_PORT_SH_nLD_0	equ	%00000000 ; joystick serial register load mode
+
+JOY_PORT_DATA		equ	%00000100 ; joystick read data bit comes in here each shift
+
+; /////////////////////////////////////////////////////////////////////////////
+; Global variables
+; /////////////////////////////////////////////////////////////////////////////
+
+		org $20
+
+Count1		ds	1 	; counter
+Count2		ds	1 	; counter
+Counter		ds	1	; used by delay macro
+index1		ds	1	; loop index
+
+; general addressing registers
+addr_lo		ds	1	; address vars
+addr_hi		ds	1
+
+; general 
+data16		ds	1	; general 8/16 bit data vars
+data8		ds	1
+
+; /////////////////////////////////////////////////////////////////////////////
+; Macros
+; /////////////////////////////////////////////////////////////////////////////
+
+DELAY MACRO clocks
+
+; first compute fractional remainder of 10 and delay
+IF ((clocks // 10) > 0)
+
+;	REPT (clocks // 10)
+;	NOP
+;	ENDR
+
+; first 3 clock chunks6
+	REPT ((clocks // 10)/3)
+	JMP $ + 1
+		ENDR
+
+; now the remainder if any
+
+	REPT ((clocks // 10)//3)
+	NOP
+	ENDR
+ENDIF
+
+; last compute whole multiples of 10, and delay
+IF ((clocks/10) >= 1)
+
+; delay 10*(clocks/10)
+	mov counter, #(clocks/10) 	; (2)
+:Loop					
+	jmp $ + 1			; (3)
+	jmp $ + 1			; (3)
+	djnz counter, :Loop		; (4/2)
+
+ENDIF
+
+ENDM
+
+; /////////////////////////////////////////////////////////////////////////////
+; Data watches
+; /////////////////////////////////////////////////////////////////////////////
+
+		WATCH	data16, 16,UBIN
+
+; /////////////////////////////////////////////////////////////////////////////
+; Subroutines
+; /////////////////////////////////////////////////////////////////////////////
+
+		org $0
+
+; ////////////////////////////////////////////////////////////////////////////
+Delay64K		
+		clr	Count1  	;Initialize Count1, Count2	
+		clr	Count2		;					
+
+Loop		djnz	Count1,loop	;Decrement until all are zero		
+		djnz	Count2,loop	;					
+		ret			;then return				
+
+; ////////////////////////////////////////////////////////////////////////////
+
+
+; ////////////////////////////////////////////////////////////////////////////
+
+Read_Joysticks
+
+; this function reads in the joysticks, again, the only timing bottlneck is the
+; shift registers (74HC166) which have a maximum clock speed of approx. 25 Mhz!
+; so we need to make sure that at a clock of 80 Mhz, the delays are large enough
+; for the clock, setup, hold, etc. times of the serial chips not to be violated
+; currently the function works up to 80 Mhz
+
+; the function works in the following steps
+;
+; step 1: latch the data from joy 0 and joy 1 into the serial registers
+; step 2: shift the 16-bits of data out of the shift registers representing the 
+;         joysticks button states into the SX52
+; step 3: return the data
+
+; parameters on entry
+
+; return values
+
+; data8   - byte holds left joystick   [ X | X | X | X | UP | DN | RT | LT | FIRE ]
+; data16  - byte holds right joystick  [ X | X | X | X | UP | DN | RT | LT | FIRE ]
+
+; SX52 port bit mappings
+
+;RA0     -> JOY_CLK
+;RA1     -> JOY_SH/LD
+;RA2     -> JOY_DATAOUT
+
+	; step 1: read in port and mask control bits
+		
+	mov	W, RA
+	and	W, JOY_PORT_MASK
+
+	; step 2: prepare for read
+
+	or	W,#(JOY_PORT_CLK_0 | JOY_PORT_SH_nLD_0)	
+	mov	RA, W
+
+	; step 3: latch joysticks into shift registers
+
+	clrb	RA.1		; JOY_SH/LD = (0), set parallel load mode
+
+	DELAY(1)
+
+	setb	RA.0		; JOY_CLK   = (1), clock
+
+	DELAY(1)
+
+	clrb	RA.0		; JOY_CLK   = (0), clock
+
+	DELAY(1)
+
+	; step 4: shift data into system, 16-bits
+
+	setb	RA.1		; JOY_SH/LD = (1), set serial shift mode
+
+	; shift 16-bits of address into latch
+	mov 	Count1, #16	; 16 bits per joystick read
+
+:Read_Joy_Bit_Loop
+
+	rl	data8		; rotate results right thru carry
+	rl	data16		; rotate upper results from from including carry
+
+	; read joy in data on port bit first
+
+	sb 	RA.2		; jump over if set
+	jmp 	:Joy_Bit_Zero
+
+	; bit set, write 1 to joystick results packet
+
+	setb 	data8.0		; data8[8] = (1)
+	jmp	:Joy_Clock_Next_Bit
+
+:Joy_Bit_Zero
+
+	; bit clear, write 0 to joystick results packet
+
+	clrb 	data8.0		; data8[7] = (0)
+
+:Joy_Clock_Next_Bit
+
+	; clock next data bit
+
+	DELAY(1)
+
+	setb	RA.0		; JOY_CLK = (1), clock
+
+	DELAY(1)
+
+	clrb	RA.0		; JOY_CLK = (0), clock
+
+	DELAY(1)
+		
+	djnz 	Count1, :Read_Joy_Bit_Loop
+
+	; reset all joystick control bits
+	mov	W, RA
+	and	W, JOY_PORT_MASK
+	or	W,#(JOY_PORT_CLK_0 | JOY_PORT_SH_nLD_0)	
+	nop
+	mov	RA, W
+
+	ret
+
+; ////////////////////////////////////////////////////////////////////////////
+
+; /////////////////////////////////////////////////////////////////////////////
+;  Begin program after restart
+; /////////////////////////////////////////////////////////////////////////////
+
+	org	$80
+Start		
+
+	bank	#$20
+		
+	; port A[2:0] used for joystick control, set to IN | OUT | OUT
+	mov	 RA, #%00000000	;Set port A output latch to zero
+	mov	!RA, #%11111100	;Set port A input/output direction
+
+
+	; port B[4:0] used for joystick state indicators, set to all output
+	mov	 RB, #%00000000	;Set port B output latch to zero
+	mov	!RB, #%00000000	;Set port B input/output direction
+
+	; port C[4:0] used for joystick state indicators, set to all output
+	mov	 RC, #%00000000	;Set port C output latch to zero
+	mov	!RC, #%00000000	;Set port C input/output direction
+
+	mov	Count1, #0
+	mov	Count2, #0
+
+Main		
+	mov	data8, #0
+	mov	data16, #0
+
+	call 	Read_Joysticks
+
+	mov	RB, data8
+	mov	RC, data16
+
+	jmp 	Main
+

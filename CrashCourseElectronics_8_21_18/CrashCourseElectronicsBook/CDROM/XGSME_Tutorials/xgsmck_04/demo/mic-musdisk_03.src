@@ -1,0 +1,779 @@
+; MIC-MUSDISK_03.SRC
+
+; NTSC version
+; Works only at 80 MHz
+
+; To make it play a different song, change the line 'include "godrest.mus"' to
+; something else, and reupload the program to the XGS.
+
+	TITLE	"Music player demo v03"
+
+
+	DEVICE	SX52, OSCHS3, XTLBUFD, IFBD	; Set everything for the XGS ME
+	RESET	Start
+	FREQ 	80_000_000 	; this is a directive to the ide only
+			  	; if you want to put the XGS ME into RUN mode
+			  	; you must make sure you go into the 
+				; device settings and make sure that
+				; HS3 is enabled, and crystal drive and
+				; feedback are disabled and then re-program
+				; the chip in PGM mode and then switch it to RUN
+
+	IRC_CAL IRC_FAST	; Prevent a warning
+	ID	"micmsdsk"	; ID string
+
+
+
+SONG1		EQU	$600
+SONG2		EQU	$800
+SONG3		EQU	$D00
+
+FIRE_BIT	EQU	4
+
+
+		org	$20
+
+include		"general_define.src"
+
+	org $40
+pixel		ds 	1
+xCnt		ds	1
+yCnt		ds	1
+temp		ds	1
+cnt1		ds	1
+cnt2		ds	1
+chroma_cnt	ds	1
+chroma_delta	ds	1
+joy_block	ds	1
+col_select	ds	1
+song_l		ds	1
+song_h		ds	1
+
+	org $50
+min_h		ds	1	; "high" minute (0-9)
+min_l		ds	1	; "low" minute (0-9)
+colon		ds	1	; Holds a ':'
+sec_h		ds	1	; "high" second (0-5)
+sec_l		ds	1	; "low" second (0-9)
+time_frac_l	ds	1	; Fractional part, low byte
+time_frac_h	ds	1	; Fractional part, high byte
+temp50		ds	1	; Temporary
+temp51		ds	1	; ...
+temp52		ds	1	; ...
+charline	ds	1
+chrCnt		ds	1	; Counter
+chrCnt2		ds	1
+chrCnt3		ds	1
+;chrCnt4		ds	1
+bgColor		ds	1
+chrCol		ds	1	; Color
+
+
+include		"general_macro.src"
+
+include 	"dracula.mus"	; Include song data
+include 	"zelda_e.mus"	; Include song data
+include 	"godrest.mus"	; Include song data
+
+include 	"xgsmp.src"	; Include music player
+
+
+		org 	$0	; Set the start of the program code
+		org	$+2	; leave 2 free word here for the debugger
+
+
+
+; Jump table, for the music player
+InitMusic	jmp @XgsMpInit
+UpdateMusic	jmp @XgsMpUpdate
+
+
+
+; Just to save some bytes later on..
+PrepareLine
+	PREPARE_VIDEO_HORIZ #CBURST_ON
+	retp
+
+; Draw a black line
+; IN: -
+; OUT: -
+BlackLine
+		PREPARE_VIDEO_HORIZ #CBURST_ON 	; Prepare required video signal for a scanline
+		jmp $+1			; 3	Delay
+		clr RTCC		; 1	Clear the cycle counter	
+		mov RE,#BLACK		; 2	Output BLACK 	
+		cjb RTCC,#16,$
+		mov RE,frame		; 2	Output background color
+		cjb RTCC,#115,$
+		mov RE,#BLACK		; 2	Output black
+		cjb RTCC,#131,$		; 	Loop until the end of this line
+		DELAY(2)		; 2	Delay	
+		retp			; 3	Return	
+
+
+; Draw one row of a character
+; IN: temp50=pixels (1bpp), chrCnt2=char width, chrCol=color
+; OUT: -
+DrawChar
+		mov W,chrCol		; 1	Put color in W
+		rr temp50		; 1	Place lsb in carry
+		sc			; 2 / 1	Skip if the lsb was a '1'
+		mov W,bgColor		; 1	Load background color in W if the lsb was a '0'
+		mov RE,W		; 1	Output color
+		iread			; 4	Delay
+		nop			; 1	...
+		nop			; 1	...
+		djnz chrCnt2,DrawChar	; 4 / 2	Loop until done
+		retp			; 3	Return
+
+
+; Draw 13 8x8 asterisks
+; IN: -
+; OUT: -
+DrawAsterisks
+		mov scanline,#8
+DA_Raster_Loop
+		call PrepareLine
+		
+		clr RTCC		; 1
+		mov RE,#BLACK
+
+		mov W,frame2		; 1
+		bank $50		; 1
+		mov chrCol,W		; 1
+		add chrCol,#$D		; 2
+		bank $20		; 1
+
+		mov W,scanline
+		bank $50
+		mov charline,W
+
+		cjb RTCC,#16,$
+		mov RE,bgColor		; 2 
+
+		dec charline
+		xor charline,#7
+		mov chrCnt,#13
+		cjb RTCC,#36,$
+DA_Raster_Loop_Inner
+		iread
+		nop
+		mov W,#$F0
+		add W,charline
+		mov M,#FONT_PAGE
+		iread
+		mov temp50,W
+		mov chrCnt2,#8
+
+		call DrawChar
+
+		add chrCol,#$10
+		djnz chrCnt,DA_Raster_Loop_Inner	
+		bank $20
+		mov RE,frame
+		cjb RTCC,#115,$
+		mov RE,#BLACK
+		cjb RTCC,#131,$
+		DELAY(8)	
+		djnz scanline,DA_Raster_Loop	
+		retp
+
+
+; Draw a number of black lines
+BLACK_LINES MACRO 1
+	mov scanline,\1
+:bllbl
+	call @BlackLine
+	djnz scanline,:bllbl 
+ENDM
+
+
+
+;############################################################################
+
+
+Start		; Our real code starts here
+
+		; Initialize variables
+		bank $50
+		clr time_frac_l
+		clr time_frac_h
+		clr sec_l
+		clr sec_h
+		clr min_l
+		clr min_h
+		mov colon,#10
+		mov bgColor,#BLACK
+
+		bank $40
+		mov chroma_cnt,#0
+		mov chroma_delta,#1
+		mov col_select,#(COLOR14)
+		setb joy_block.FIRE_BIT
+		clr yCnt
+		mov song_l,#(SONG2 // $100)
+		mov song_h,#(SONG2 / $100)
+
+		; Initialize music player
+		mov 10,song_l
+		mov 11,song_h
+		call InitMusic
+		_bank $20
+
+		clr frame2
+
+		INITIALIZE_VIDEO	; Initialize I/O controller for video
+
+Begin_Raster	
+		bank $20
+		mov frame,#BLACK
+
+		mov !OPTION, #%11000100	; Sets prescaler to 1:32
+
+		BLACK_LINES #8		; Draw 8 black lines
+		call DrawAsterisks	; Draw "*************"
+		BLACK_LINES #2		; Draw 2 black lines
+
+
+		; Draw the text "XGS MUSICDISK"
+
+		mov scanline,#8
+		DELAY(8)
+Raster_Loop3
+		call PrepareLine
+		
+		clr RTCC		; 1
+		mov RE,#BLACK
+		cjb RTCC,#16,$
+		mov RE,frame
+		
+		mov W,scanline
+		bank $50
+		mov charline,W
+		mov chrCol,#(COLOR15+8)
+		DELAY(8)
+
+		dec charline
+		xor charline,#7
+		mov chrCnt,#13		; Number of characters
+		mov temp52,#128		; 128 = starting position of the string
+		cjb RTCC,#36,$
+
+Raster_Loop3_1
+		; Read one character from the string
+		mov W,temp52		; 1
+		mov M,#DIGIT_PAGE	; 1
+		iread			; 4
+
+		; Read one byte of font data
+		add W,charline		; 1
+		mov M,#FONT_PAGE
+		iread
+		mov temp50,W
+
+		mov chrCnt2,#8
+		call DrawChar
+
+		nop
+		inc temp52
+		djnz chrCnt,Raster_Loop3_1	
+		bank $20
+		mov RE,frame
+		cjb RTCC,#115,$
+		mov RE,#BLACK
+		cjb RTCC,#131,$
+		DELAY(8)	
+		djnz scanline,Raster_Loop3
+
+
+		BLACK_LINES #2		; Draw 2 black lines
+		call DrawAsterisks	; Draw "*************"
+		BLACK_LINES #2		; Draw 2 black lines
+
+		bank $40
+		mov 10,col_select
+		bank $50
+		mov bgColor,10 ;#(COLOR14)
+		bank $20
+		mov frame,10 ;#(COLOR14)
+		BLACK_LINES #28		; Draw 28 black lines	
+
+
+		; Draw the time played (mm:ss)
+
+		mov scanline,#8
+		;DELAY(8)
+Raster_Loop2
+		call PrepareLine
+
+		clr RTCC		; 1
+		mov RE,#BLACK
+		cjb RTCC,#16,$
+		mov RE,frame
+
+		mov W,scanline
+		bank $50
+		mov charline,W
+
+		dec charline
+		xor charline,#7
+		mov chrCnt,#$50		; First byte is at $50 (min_h)
+		cjb RTCC,#54,$
+
+Draw_Time
+		mov W,chrCnt
+		mov FSR,W
+		mov W,INDF		; Load indirect
+		bank $50		
+		mov temp50,W
+		rl temp50		; Multiply by 8
+		rl temp50		; ...
+		rl temp50		; ...
+		mov W,temp50
+		and W,#$78		; AND out any unnecessary bits
+		add W,charline		; Add the char line offset
+		mov M,#DIGIT_PAGE
+		iread			; Read one byte of font data
+		mov temp50,W
+		mov chrCnt2,#8
+		mov chrCol,#(COLOR1+8)
+
+		call DrawChar
+					
+		inc chrCnt
+		cjne chrCnt,#$55,Draw_Time
+
+		bank $20
+		mov RE,frame
+		cjb RTCC,#115,$
+		mov RE,#BLACK
+		cjb RTCC,#131,$
+		DELAY(8)	
+		djnz scanline, Raster_Loop2	; Loop for the next scanline
+
+		jmp @page_200
+
+
+IF $ > $200
+ERROR "Page Spillage!"
+ENDIF
+
+
+;#########################################################################
+
+		org $200
+page_200
+		page $			; Set the new page
+
+		BLACK_LINES #30
+
+
+		; Draw the current note played for all 3 channels
+
+		mov scanline,#8
+Raster_Loop4
+		PREPARE_VIDEO_HORIZ #CBURST_ON 	; Prepare required video signal for a scanline
+		jmp $+1			; Delay 3 cycles
+		nop			; Delay
+		nop			; ...
+
+		clr RTCC		; 1
+		mov RE,#BLACK
+		cjb RTCC,#16,$
+		mov RE,frame
+
+		mov W,scanline
+		bank $50
+		mov charline,W
+
+		dec charline
+		xor charline,#7
+		mov chrCnt,#3		; Number of channels
+		mov chrCol,#(COLOR11+7)
+		mov temp52,#$A0		; Register bank for first channel
+		cjb RTCC,#42,$
+
+Draw_Note
+		mov chrCnt3,#2
+		mov W,temp52
+		mov FSR,W
+		mov W,mp_volnote
+		_bank $50
+		and W,#$F		; Keep note number
+		mov temp51,W
+		add temp51,W		; W+W = W*2
+		add temp51,#96		; 96 = offset of note strings
+Draw_Note2
+		mov M,#DIGIT_PAGE
+		mov W,temp51
+		iread
+		
+		mov temp50,W
+		rl temp50
+		rl temp50
+		rl temp50
+		mov W,temp50
+		and W,#$F8
+		add W,charline
+		mov M,#FONT_PAGE
+		iread
+		mov temp50,W
+		mov chrCnt2,#8
+
+		call @DrawChar
+
+		inc temp51
+		djnz chrCnt3,Draw_Note2
+		add temp52,#$10
+		bank $20
+		mov RE,frame
+		DELAY(320)
+		bank $50
+		djnz chrCnt,Draw_Note
+		bank $20
+		mov RE,frame
+		cjb RTCC,#115,$
+		mov RE,#BLACK
+		cjb RTCC,#131,$
+		DELAY(8)	
+		djnz scanline,Raster_Loop4
+
+	
+		BLACK_LINES #72			; Draw 72 black lines
+
+
+		bank $40
+		mov cnt2,#(34+8)		; Number of scanlines
+:Vblank_Loop1
+		bank $20
+		PREPARE_VIDEO_HORIZ burst_phase
+		bank $40
+		cjae cnt2,#30, :Black_line1
+		cjb  cnt2,#14, :Black_line2
+
+		; Draw XGS overscan logo
+
+		mov RE,#BLACK		; 2. Output black
+		mov cnt1,#8		; 2. Number of pixels
+		mov M,#LOGO_PAGE	; 1
+		mov W,yCnt		; 1
+		iread			; 4. Read first byte
+		mov pixel,W		; 1
+
+		; Calculate the logo gradient
+		mov temp,cnt2		; 2
+		sub temp,#22		; 2. 22 = first_line-char_height = 30-8
+		sb temp.7		; 1. Skip if the result is negative
+		not temp		; 1. Invert bits
+		mov W,#7		; 1. Keep lower 3 bits
+		and temp,W		; 1
+		add temp,#(COLOR11+2)	; 2. Add base color
+	
+		bank $20		; 1
+		DELAY(1614 - 2 - 14 - 8 - 1 - 10)
+		bank $40		; 1
+
+:Draw_bits_0_7
+		mov W,temp 		; 1
+		rr pixel		; 1. Place lsb in C
+		sc			; 2 / 1. Skip if bit is set
+		mov W,#BLACK		; 1. Bit was clear, should be black 
+		mov RE,W		; 1. Output color
+		DELAY(31)
+		djnz cnt1,:Draw_bits_0_7 ; 4 / 2
+		mov RE,#BLACK		; 2
+
+		; Read the next byte
+		mov cnt1,#8		; 2
+		mov M,#LOGO_PAGE	; 1
+		inc yCnt
+		mov W,yCnt		; 1
+		iread			; 4
+		mov pixel,W		; 1 (10)	
+:Draw_bits_8_15
+		mov W,temp 		; 1
+		rr pixel		; 1
+		sc			; 2 / 1
+		mov W,#BLACK		; 1
+		mov RE,W		; 1
+		DELAY(31)
+		djnz cnt1,:Draw_bits_8_15 ; 4 / 2
+		mov RE,#BLACK		; 2
+
+		; ..and finally the last one
+		mov RE,#BLACK		; 2
+		mov cnt1,#8		; 2
+		mov M,#LOGO_PAGE	; 1
+		inc yCnt
+		mov W,yCnt		; 1
+		iread			; 4
+		mov pixel,W		; 1 (12)	
+:Draw_bits_16_23
+		mov W,temp ;#(COLOR14+5)	; 1
+		rr pixel		; 1
+		sc			; 2 / 1
+		mov W,#BLACK		; 1
+		mov RE,W		; 1
+		DELAY(31)
+		djnz cnt1,:Draw_bits_16_23 ; 4 / 2
+		nop			; 1
+		nop			; 1
+
+		mov RE,#BLACK		; 2
+		sub yCnt,#2		; 2. Set yCnt back to its prior value
+
+		; yCnt is increased by 3 on even scanlines
+		; (logo is 24 pixels wide = 3 bytes/row)
+		mov W,cnt2		; 1
+		not W
+		and W,#1		; 1
+		add yCnt,W		; 1
+		add yCnt,W		; 1
+		add yCnt,W		; 1
+
+		bank $20
+		DELAY(1614 - 10 - 8 - 1)
+
+		jmp :Next_line		; 3
+
+:Black_line1
+		bank $20
+		mov RE, #BLACK	; ( 2 cycles ) sync
+		DELAY (CLK_SCALE*526 - 2 - 4 - 9 - 2)
+		jmp :Next_line
+:Black_line2
+		bank $20
+		mov RE, #BLACK		; ( 2 cycles ) sync
+		DELAY (CLK_SCALE*526 - 2 - 4 - 13 - 2)
+		jmp :Next_line
+
+:Next_line	
+		bank $40		
+		djnz cnt2, :Vblank_Loop1
+		; END BOTTOM SCREEN OVERSCAN
+
+		jmp @page_400
+
+IF $ > $400
+ERROR "Page Spillage!"
+ENDIF
+
+
+;##############################################################################
+
+
+		org $400
+page_400
+
+	page $
+
+		; VERTICAL SYNC PULSE
+:Begin_Blank
+		mov RE, #SYNC		; send sync signal
+		mov !OPTION, #%11000111	; turns off interrupts, sets prescaler to 1:256
+		clr RTCC		; Start RTCC counter
+
+
+		; The idead here is to change the color burst phase every
+		; 128th frame (when chroma_cnt hits zero). The burst phase
+		; is either incremented or decremented depending on the value
+		; in chroma_delta. The delta is inverted (negated) when the
+		; color burst is 0 or 13.
+		bank $40
+		mov W,chroma_delta
+		dec chroma_cnt
+		decsz chroma_cnt
+		jmp no_chroma_change
+		bank $20
+		swap burst_phase		; Swap nibbles
+		add burst_phase,W		; Add delta	
+		and burst_phase,#15		; Only four bits of chroma
+		cje burst_phase,#13,invert_delta
+		cje burst_phase,#0,invert_delta
+		jmp dont_invert
+invert_delta
+		bank $40
+		not chroma_delta
+		inc chroma_delta		; not+inc == neg 
+		bank $20
+dont_invert
+		swap burst_phase		; Swap nibbles back to original order
+		or burst_phase,#BLACK_LEVEL	; OR in some base luma
+no_chroma_change
+
+
+		; Now we update the time. 16 bits are used for the fractional part,
+		; divided into two bytes. Each frame 1092 (65536/60) is added to the
+		; fractional part, and the second and minute counters are increased
+		; if necessary.
+		bank $50
+		clr temp50
+		add time_frac_l,#68	; 68 = 1092 & 0xFF
+		jnc no_overflow
+		add time_frac_h,#1
+		snc
+		inc temp50
+no_overflow
+		add time_frac_h,#4	; 4 = (1092 & 0xFF)>>8
+		snc
+		inc temp50
+		add sec_l,temp50
+		cjbe sec_l,#9,time_ok
+		clr sec_l
+		inc sec_h
+		cjbe sec_h,#5,time_ok
+		clr sec_h
+		inc min_l
+		cjbe min_l,#9,time_ok
+		clr min_l
+		inc min_h
+		cjbe min_h,#9,time_ok
+		clr min_h
+time_ok
+		
+		mov bgColor,#BLACK
+
+		bank $40
+		clr yCnt
+
+		; Update music once per frame
+		mov 10,song_l
+		mov 11,song_h
+		call @UpdateMusic
+		_bank $20
+
+		add frame2,#$10
+
+
+		; Read joystick and change the song and background color if
+		; fire was pressed.
+		READ_JOYSTICKS
+		mov 10,joystick1
+		bank $40
+		mov temp,10
+		jb joy_block.FIRE_BIT,no_keypress
+		jnb 10.FIRE_BIT,no_keypress
+		add col_select,#$30
+		cjae col_select,#$80,col_select_ok
+		mov col_select,#(COLOR8)
+col_select_ok
+		cjne col_select,#COLOR8,:select_1
+		mov song_l,#(SONG3 // $100)
+		mov song_h,#(SONG3 / $100)
+		jmp :got_pos
+:select_1
+		cjne col_select,#COLOR11,:select_2
+		mov song_l,#(SONG1 // $100)
+		mov song_h,#(SONG1 / $100)
+		jmp :got_pos
+:select_2
+		mov song_l,#(SONG2 // $100)
+		mov song_h,#(SONG2 / $100)
+		jmp :got_pos
+:got_pos
+		mov 10,song_l
+		mov 11,song_h
+		call @InitMusic
+
+		_bank $50
+		; Reset clock
+		clr time_frac_l
+		clr time_frac_h
+		clr sec_l
+		clr sec_h
+		clr min_l
+		clr min_h
+		bank $40
+no_keypress
+		mov W,temp
+		and W,#$10
+		mov joy_block,W
+
+
+		bank $20
+
+		; We are done, now wait for the remaining time to finish this video frame
+		; and prepare overscan (bottom and top) for the next!
+		cjb RTCC, #79, $	; Wait for remaining vsync (79*256 cycles = 20224, close enough)
+		; END VERTICAL SYNC PULSE
+
+		; TOP SCREEN OVERSCAN
+		mov scanline, #32 
+:Vblank_Loop3   
+		PREPARE_VIDEO_HORIZ #CBURST_ON
+		mov RE, #BLACK 
+		DELAY (CLK_SCALE*526 - 2 - 4)
+		djnz scanline, :Vblank_Loop3
+		jmp @Begin_Raster		; Loop back for the next frame
+
+IF $ > $600
+ERROR "Page Spillage!"
+ENDIF
+
+;##############################################################################
+
+
+DIGIT_PAGE	EQU	$0A
+org		DIGIT_PAGE*$100
+include		"font3.src"
+
+;c c+ d d+ e f f+ g g+ a a+ b
+dw	31
+dw	31
+dw	31
+dw	31
+dw	31
+dw	31
+dw	2
+dw	31
+dw	2
+dw	27
+dw	3
+dw	31
+dw	3
+dw	27
+dw	4
+dw	31
+dw	5
+dw	31
+dw	5
+dw	27
+dw	6
+dw	31
+dw	6
+dw	27
+dw	0
+dw	31
+dw	0
+dw	27
+dw	1
+dw	31
+dw	31
+dw	31
+
+; "XGS MUSICDISK"
+dw 	23*8
+dw 	6*8
+dw 	18*8
+dw 	31*8
+dw 	12*8
+dw 	20*8
+dw 	18*8
+dw 	8*8
+dw 	2*8
+dw 	3*8
+dw 	8*8
+dw 	18*8
+dw 	10*8
+
+
+; XGS overscan logo
+LOGO_PAGE 	EQU	$0B
+org 		LOGO_PAGE*$100
+include		"xgslogo.src"
+
+FONT_PAGE 	EQU	$0C
+org 		FONT_PAGE*$100
+include		"font2.src"
+
+

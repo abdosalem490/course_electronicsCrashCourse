@@ -1,0 +1,30 @@
+;---------------------------------------------------------------
+#TITLE		Akumajo Dracula boss theme
+#COMPOSER	Unknown
+#PROGRAMER	mic
+#OCTAVE-REV 0
+;---------------------------------------------------------------
+
+
+; Global tempo
+ABC t112
+
+A o4 l16 v7 @2
+A L
+A cgd+gcgd+gdgfgdgfg
+A cgd+gcgd+gcgd+gcgd+g
+A cg+fg+cg+fg+cgfgcgfg
+A dgfgdgfgcgd+gcgd+g
+
+B o3 l2 v6 @1
+B L
+B c<b>cd+
+B fg<b>c
+
+C o3 l4 v6 @2
+C L
+C gggg
+
+
+
+

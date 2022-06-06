@@ -1,0 +1,1039 @@
+; Racer City
+; XGameStation Pico Edition Version
+; Alex Varanese
+; 2.4.2005
+
+; **** NOTES ******************************************************************
+
+; This is a direct port of the "Racer City" hack originally written for the
+; XGameStation Micro Edition. For the Pico edition, which runs on an SX28
+; processor instead of an SX52, the only real work behind the port was replacing
+; all SX52-specific code with its SX28 equivelent. The SX28 differs from the 52
+; mostly in its 2K of program space (opposed to 4K), slightly different BANK
+; instruction, and 128 bytes of banked file registers (opposed to 256).
+;
+; Aside from the SX52/SX28 differences, the I/O registers are used differently
+; on the XGS PE. The following is a brief summary of the XGS PE's I/O
+; registers:
+;
+; RA.3-0 - 4 LED array
+; RB.4-0 - Joystick input port
+; RC.3-0 - 4-bit video output port
+; RC.7-4 - 4-bit audio output port
+
+; **** DEVICE SETUP ***********************************************************
+
+DEVICE		SX28L, STACKX, CARRYX, OPTIONX, TURBO, OSCHS3, IFBD
+IRC_CAL		IRC_FAST
+RESET     	Main
+FREQ      	80_000_000
+CLK_SCALE EQU   8
+
+; **** CONSTANTS **************************************************************
+
+; sync and black
+
+BLACK_LEVEL     	EQU     (6)                  	; approx. .3v
+SYNC            	EQU     (15*16 + 0)             ; no color burst with 0v
+BLACK           	EQU     (15*16 + BLACK_LEVEL)   ; no color burst with .3v
+
+; reference color burst and 7 colors
+
+CBURST_ON       	EQU     (0*16  + 5)
+CBURST_OFF      	EQU     (15*16 + 5)		; same as black
+
+COLOR0         		EQU     (0*16 + BLACK_LEVEL)
+COLOR1          	EQU     (1*16 + BLACK_LEVEL)
+COLOR2          	EQU     (2*16 + BLACK_LEVEL)
+COLOR3          	EQU     (3*16 + BLACK_LEVEL)
+COLOR4          	EQU     (4*16 + BLACK_LEVEL)
+COLOR5          	EQU     (5*16 + BLACK_LEVEL)
+COLOR6          	EQU     (6*16 + BLACK_LEVEL)
+COLOR7          	EQU     (7*16 + BLACK_LEVEL)
+COLOR8          	EQU     (8*16 + BLACK_LEVEL)
+COLOR9          	EQU     (9*16 + BLACK_LEVEL)
+COLOR10         	EQU     (10*16 + BLACK_LEVEL)
+COLOR11         	EQU     (11*16 + BLACK_LEVEL)
+COLOR12         	EQU     (12*16 + BLACK_LEVEL)
+COLOR13         	EQU     (13*16 + BLACK_LEVEL)
+COLOR14         	EQU     (14*16 + BLACK_LEVEL)
+COLOR15         	EQU     (15*16 + 15) 		; equivalent to CBURST_OFF and WHITE
+
+DARKGRAY        	EQU     (15*16 +  8)
+GRAY            	EQU     (15*16 + 10)
+LIGHTGRAY       	EQU     (15*16 + 12)
+WHITE           	EQU     (15*16 + 15)
+
+OVERSCAN_COLOR  	EQU     BLACK
+HSYNC_COMP      	EQU    	(+0)
+
+; Video
+OVERSCAN_BYPASS		EQU	504			; Amount of clocks required to bypass the horizontal overscan
+
+; Data
+BANK_MAIN		EQU	$30			; Bank in which main variables reside
+BANK_GAME		EQU	$50			; Bank in which game-related variables reside
+BANK_MISC		EQU	$70			; Bank in which miscellanious variables reside
+
+; Joystick
+JOY_PORT_MASK           EQU      %00000111 		; mask for bits used by joystick interface from SX52
+JOY_PORT_CLK            EQU      %00000001 		; clock bit mask
+JOY_PORT_CLK_1          EQU      %00000001 		; clock high
+JOY_PORT_CLK_0         	EQU      %00000000 		; clock low
+JOY_PORT_SH_nLD         EQU      %00000010 		; joystick serial registers shift or load bit mask
+JOY_PORT_SH_nLD_1       EQU      %00000010 		; joystick serial register shift mode
+JOY_PORT_SH_nLD_0       EQU      %00000000 		; joystick serial register load mode
+JOY_PORT_DATA           EQU      %00000100 		; joystick read data bit comes in here each shift
+
+STICK_DEBOUNCE_TIME	EQU	64			; Counter reset time for stick debounce
+
+; Color
+BURST_PHASE_SKY		EQU	( COLOR8 - 1 )
+BURST_PHASE_ROAD	EQU	( COLOR8 - 1 )
+COLOR_SKY_BASE		EQU	( COLOR14 )
+COLOR_CITY		EQU	( BLACK + 2 )
+COLOR_GRASS_LITE	EQU	( COLOR8 + 5 )
+COLOR_STRIPE_LITE	EQU	( WHITE )
+COLOR_ROAD_LITE		EQU	( BLACK + 4 )
+COLOR_GRASS_DARK	EQU	( COLOR8 + 4 )
+COLOR_STRIPE_DARK	EQU	( COLOR14 + 4 )
+COLOR_ROAD_DARK		EQU	( BLACK + 3 )
+
+VIDEO_REG		EQU	RC
+
+; Game
+TICK_MAP_SIZE		EQU	255			; Size of virtual "map" of ticks along side of road
+TICK_SIZE		EQU	16			; Size of tick within tick map
+
+; **** GLOBALS ****************************************************************
+
+ORG	$0A
+
+; Temporary registers
+t0			DS	1
+t1			DS	1
+t2			DS	1
+t3			DS	1
+t4			DS	1
+t5			DS	1
+
+; **** MAIN/VIDEO VARIABLES ***************************************************
+
+ORG      BANK_MAIN
+
+d0      	     	DS      1 			; Delay counters
+d1	           	DS      1
+luma             	DS      1 			; temp for luma
+chroma           	DS      1 			; temp for chroma
+comp_video      	DS      1 			; temp sum of luma and chroma
+burst_phase     	DS      1			; temp for burst phase index
+scanline        	DS      1 			; scanline counter
+timerlow        	DS      1 			; timer low and high
+timerhi                 DS     	1
+addr_lo                 DS      1      			; address vars
+addr_hi                 DS      1
+data16           	DS      1       		; general 8/16 bit data vars
+data8            	DS      1
+stick_debounce		DS	1			; Stick debouce counter
+
+bg_scroll		DS	1			; Background scroll offset
+
+; **** GAME VARIABLES *********************************************************
+
+ORG	BANK_GAME
+
+d0      	     	DS      1 			; Delay counters
+d1	           	DS      1
+speed			DS	1			; Speed
+road_slope_hi		DS	1			; Road draw slope high bits
+road_slope_lo		DS	1			; Road draw slope low bits
+stripe_slope_hi		DS	1			; Stripe draw slope high bits
+stripe_slope_lo		DS	1			; Stripe draw slope low bits
+wheel_angle		DS	1			; "Angle" of steering wheel (0 (Left) - 128 (Right))
+scan_curve		DS	1			; Curve offset for current scanline
+texel_hi		DS	1			; 8.8 Texel index into stripe map
+texel_lo		DS	1
+texel_inc_hi		DS	1			; 8.8 Texel increment
+texel_inc_lo		DS	1			; 8.8 Texel
+tick_scroll		DS	1			; Scroll offset of tick as track is traversed
+ddx			DS	1
+
+; **** MISC VARIABLES *********************************************************
+
+ORG	BANK_MISC
+
+sa			DS	1			; Speed accumulator (for scrolling)
+
+; **** DEBUGGER WATCHES *******************************************************
+
+WATCH	t0,    			8, 	UHEX
+WATCH	t1,    			8, 	UHEX
+WATCH	t2,    			8, 	UHEX
+WATCH	t3,    			8, 	UHEX
+WATCH	t4,    			8, 	UHEX
+WATCH	t5,    			8, 	UHEX
+
+WATCH	speed, 			8, 	UDEC
+WATCH	road_slope_hi,		8,	UDEC
+WATCH	road_slope_lo,		8,	UDEC
+WATCH	stripe_slope_hi,	8,	UDEC
+WATCH	stripe_slope_lo,	8,	UDEC
+WATCH	texel_hi,		8, 	UDEC
+WATCH	texel_lo,		8, 	UDEC
+WATCH	texel_inc_hi,		8, 	UDEC
+WATCH	texel_inc_lo,		8, 	UDEC
+WATCH	tick_scroll,		8, 	UDEC
+WATCH	scan_curve,		8,	UDEC
+WATCH	wheel_angle,		8,	UDEC
+
+; **** MACROS *****************************************************************
+
+; *****************************************************************************
+; *
+; *	FP_8_8_ADD
+; *
+; *	Adds two 8.8 fixed-point numbers. Y is added to X in place.
+
+FP_8_8_ADD MACRO	xh, xl, yh, yl
+
+	CLC					; (1) Make sure the carry is clear
+	ADD	xl, yl				; (2) Add the fractional bytes
+	ADD	xh, yh				; (2) Add the whole bytes with carry
+
+ENDM ; End FP_8_8_ADD
+
+; *****************************************************************************
+; *
+; *	FP_8_8_SUB
+; *
+; *	Subtracts two 8.8 fixed-point numbers. Y is subtracted from X in place.
+
+FP_8_8_SUB MACRO	xh, xl, yh, yl
+
+	NOT	yh				; (1) Compute two's compliment of Y
+	NOT	yl				; (1)
+	CLC					; (1)
+	ADD	yl, #1				; (2)
+	ADDB	yh, C				; (2)
+	CLC					; (1) Make sure the carry is clear
+	ADD	xl, yl				; (2) Add the fractional bytes
+	ADD	xh, yh				; (2) Add the whole bytes with carry
+
+ENDM ; End FP_8_8_SUB
+
+; *****************************************************************************
+; *
+; *	DELAY
+; *
+; *	Delays for <clocks> microseconds.
+
+DELAY MACRO clocks
+
+; first compute fractional remainder of 10 and delay
+IF (((clocks) // 10) > 0)
+
+; first 3 clock chunks
+        REPT (((clocks) // 10)/3)
+        JMP $ + 1
+        ENDR
+
+; now the remainder if any
+
+        REPT (((clocks) // 10)//3)
+        NOP
+        ENDR
+ENDIF
+
+; next multiples of 100
+IF (((clocks) / 100) >= 1)
+
+; delay 100*(clocks/100), loop equals 100, therefore 1*(clocks/100) iterations
+        mov d0, #((clocks)/100)     		; (2)
+:Loop
+
+        mov d1, #24                 		; (2)
+:Loop100
+        djnz d1, :Loop100           		; (4/2)
+
+        djnz d0, :Loop               		; (4/2)
+
+ENDIF
+
+; last compute whole multiples of 10, and delay
+IF (( ((clocks) // 100) / 10) >= 1)
+
+; delay 10*(clocks/10), loop equals 10, therefore (clocks/10) iterations
+        mov d0, #( ((clocks) // 100) / 10)    	; (2)
+:Loop2
+        jmp $ + 1                          	; (3)
+        jmp $ + 1                          	; (3)
+        djnz d0, :Loop2              		; (4/2)
+
+ENDIF
+
+ENDM
+
+; **** SUBROUTINE JUMP TABLE **************************************************
+
+ORG	$0
+
+Call_Start_Scanline	JMP	@Start_Scanline
+Call_Emit_Overscan	JMP	@Emit_Overscan
+Call_Read_Joystick	JMP	@Read_Joystick
+Call_Handle_Input	JMP	@Handle_Input
+Call_Draw_Road_Scanline	JMP	@Draw_Road_Scanline
+Call_Do_VSync_Logic	JMP	@Do_VSync_Logic
+
+; **** MAIN *******************************************************************
+
+Main
+
+	BANK	#$20
+
+	; Initialize I/O controller
+
+        ; port A[2:0] used for joystick control, set to IN | OUT | OUT
+       	MOV	RA,  #%00000000			; Set port A output latch to zero
+        MOV	!RA, #%00000000  		; Set port A to output directio
+       	MOV	VIDEO_REG,  #%00000000		; Set port A output latch to zero
+        MOV	!VIDEO_REG, #%00000000   	; Set port A to output direction
+	MOV 	!RB, #%11111111 		; Set port B direction 
+	MOV	W, #$1E				; Set mode register to write pullup resistor
+	MOV	M, W
+	MOV	!RB,  #%00000000 		; Set joystick inputs pullups on (0=on, 1=off)
+        MOV     luma, #0
+        MOV     timerlow, #0
+        MOV	timerhi, #0
+
+	; Reset the background scroll
+	CLR	bg_scroll
+
+	; Reset the spedometer
+	BANK	BANK_GAME
+	CLR	speed
+	MOV	tick_scroll, #TICK_MAP_SIZE
+	MOV	wheel_angle, #128
+	BANK	BANK_MAIN
+
+	BANK	BANK_MISC
+	CLR	sa
+	BANK	BANK_MAIN
+
+	; Clear the joystick debounce counter
+	CLR	stick_debounce
+
+; **** MAIN PROGRAM LOOP ******************************************************
+
+Begin_Raster
+
+	BANK	BANK_GAME
+
+	; Reset the road slope
+	MOV	road_slope_hi, #74
+	CLR	road_slope_lo
+	MOV	stripe_slope_hi, #72
+	CLR	stripe_slope_lo
+
+	; Reset the road ticks
+	CLR	texel_hi
+	CLR	texel_lo
+	MOV	texel_inc_hi, #48
+	CLR	texel_inc_lo
+	MOV	ddx, #%00010000
+
+	BANK 	BANK_MAIN
+
+	; **** DRAW UPPER SKY *************************************************
+
+	MOV	scanline, #32			; (2)
+draw_sky_loop_top
+	CALL	@Call_Start_Scanline
+	MOV	VIDEO_REG, #(COLOR_SKY_BASE + 1) & %00001111 ; (2)
+	DELAY	( 4208 - 20 )
+	DJNZ	scanline, draw_sky_loop_top	; (2/4)
+
+	MOV	scanline, #63
+draw_sky_loop_u
+
+	; **** SET UP SCANLINE ************************************************
+
+	CALL	@Call_Start_Scanline
+
+	; **** DRAW SCANLINE
+
+	; Put the color of the current sky scanline in <t1>
+	MOV	t0, #64				; (2) Base the gradient on the
+						;     scanline counter
+	SUB	t0, scanline			; (2)
+	CLC					; (1) Divide by 8 for 8 sky
+						;     color shades
+	RR	t0				; (1)
+	CLC					; (1)
+	RR	t0				; (1)
+	CLC					; (1)
+	RR	t0				; (1)
+	ADD	t0, #2				; (2) Increase the brightness
+	MOV	t1, #COLOR_SKY_BASE		; (2) Set the sky's base color
+	ADD	t1, t0				; (2) Modulate the sky intensity
+	AND	t1,  #%00001111			; (1)
+	MOV	VIDEO_REG, t1			; (2)
+	DELAY	( 4208 - 18 - 4 - 2 )
+
+	DEC	scanline			; (1)
+	CJA	scanline, #44, draw_sky_loop_u	; (2/4) Next scanline
+
+	; **** DRAW SKYLINE ***************************************************
+
+	; 44 scanlines of lower sky are left after above loop
+draw_sky_loop_l
+
+	; **** SET UP SCANLINE
+
+	CALL	@Call_Start_Scanline
+
+	; **** DRAW SCANLINE
+
+	; **** Set up the scanline
+
+	; Put the color of the current sky scanline in <t1>
+	MOV	t0, #64				; (2) Base the gradient on the
+						;     scanline counter
+	SUB	t0, scanline			; (2)
+	CLC					; (1) Divide by 8 for 8 sky
+						;     color shades
+	RR	t0				; (1)
+	CLC					; (1)
+	RR	t0				; (1)
+	CLC					; (1)
+	RR	t0				; (1)
+	ADD	t0, #2				; (2) Increase the brightness
+	MOV	t1, #COLOR_SKY_BASE		; (2) Set the sky's base color
+	ADD	t1, t0				; (2) Modulate the sky intensity
+
+	; **** Render each pixel of the scanline
+
+	MOV	t0, #182			; (2) <t0> is the pixel counter
+	MOV	t3, #skyline			; (2) Start at the base of the
+						;     table base address
+	ADD	t3, bg_scroll			; (2) Add background scroll
+						;     offset
+sky_pixel_loop_l
+
+	; Put the next city Y pixel location in <t2>
+	MOV	M, #skyline >> 8		; (1) Point M:W at the table
+	MOV	W, t3				; (1) Complete the address
+	IREAD					; (4) Read the table value
+	MOV	t2, W				; (1) Put the value in <t2>
+	INC	t3				; (1) Move to the next pixel
+
+	; If the current pixel is above the skyline, draw sky; otherwise,
+	; draw the city color
+	CJA	scanline, t2, sky_pixel_l	; (4/6)
+	NOP					; (1) Pad this branch of the
+						;     conditional
+	NOP					; (1) Pad this branch of the
+						;     conditional
+	MOV	VIDEO_REG, #COLOR_CITY & %00001111	; (2) Draw a building color pixel
+	JMP	pixel_done_l			; (3)
+sky_pixel_l
+	AND	t1,  #%00001111
+	MOV	VIDEO_REG, t1			; (2) Render the sky
+	;JMP	$ + 1				; (3) Pad the jump above
+	NOP
+pixel_done_l
+
+	DJNZ	t0, sky_pixel_loop_l		; (2/4) Next pixel
+
+	DJNZ	scanline, draw_sky_loop_l	; (2/4) Next scanline
+
+	; **** DRAW ROAD
+
+	MOV	burst_phase, #BURST_PHASE_ROAD	; (2) Set the road burst phase
+	MOV	scanline, #96			; (2) Render half the screen as the road
+draw_road_loop
+
+	; **** SET UP SCANLINE
+
+	CALL	@Call_Start_Scanline
+
+	; **** DRAW SCANLINE
+
+	CALL	@Call_Draw_Road_Scanline
+
+	DJNZ	scanline, draw_road_loop	; (2/4) Next scanline
+
+	; **** BOTTOM SCREEN OVERSCAN *****************************************
+
+        MOV	scanline, #28
+	CALL	@Call_Emit_Overscan
+
+	; **** VERTICAL SYNC **************************************************
+
+	; Emit sync
+	MOV	VIDEO_REG, #SYNC & %00001111	; (2)
+	CALL	@Call_Do_VSync_Logic
+
+	; **** TOP SCREEN OVERSCAN ********************************************
+
+      	MOV	scanline, #38        		; Render scanlines
+	CALL	@Call_Emit_Overscan
+
+        JMP	Begin_Raster			; Next frame
+
+; **** SUBROUTINES ************************************************************
+
+; *****************************************************************************
+; *
+; *	Start_Scanline ()
+; *
+; *	Emits the signal to start a new scanline.
+
+Start_Scanline
+
+	; front porch 1.5us
+        mov VIDEO_REG, #BLACK & %00001111  	; (2) black
+        DELAY (CLK_SCALE*15-2)
+
+	; hsync 4.7us
+        mov VIDEO_REG, #SYNC & %00001111        ; (2) sync
+        DELAY (CLK_SCALE*47 - 2)
+
+	; pre-burst .6us
+        mov VIDEO_REG, #BLACK & %00001111       ; (2) sync
+        DELAY (CLK_SCALE*6 - 2)
+
+        DELAY (CLK_SCALE*25)
+
+	; post-burst 1.6us
+       	mov VIDEO_REG, #BLACK & %00001111     	; (2) sync
+       	DELAY (CLK_SCALE*16 - 2)
+
+	RETP					; (3)
+
+End_Start_Scanline
+
+; *****************************************************************************
+; *
+; *	Emit_Overscan ()
+; *
+; *	Emits <scanline> overscan lines.
+
+Emit_Overscan
+
+:vblank_loop
+
+	; front porch 1.5us
+        mov VIDEO_REG, #BLACK & %00001111     	; (2) black
+        DELAY (CLK_SCALE*15-2)
+
+	; hsync 4.7us
+        mov VIDEO_REG, #SYNC & %00001111      	; (2) sync
+        DELAY (CLK_SCALE*47 - 2)
+
+	; pre-burst .6us
+        mov VIDEO_REG, #BLACK & %00001111       ; (2) sync
+        DELAY (CLK_SCALE*6 - 2)
+
+	; color burst reference 2.5us (9-10 clocks)
+        DELAY (CLK_SCALE*25)
+
+	; post-burst 1.6us
+        mov VIDEO_REG, #BLACK & %00001111     	; (2) sync
+        DELAY (CLK_SCALE*16 - 2)
+
+	; draw scanline (52.6 us)
+        mov VIDEO_REG, #OVERSCAN_COLOR & %00001111	; (2) sync
+        DELAY (CLK_SCALE*526 - 2 - 4)
+
+     	djnz scanline, :vblank_loop
+
+	RETP
+
+End_Emit_Overscan
+
+; *****************************************************************************
+; *
+; *	Read_Joystick ()
+; *
+; *	Reads the joystick into the local joystick buffer.
+
+Read_Joystick
+
+	; Update LEDs with joystick status
+	MOV	RA, RB
+
+	; Read joystick port
+	BANK	BANK_MAIN
+	MOV	data8, RB
+
+        RETP
+
+End_Read_Joystick
+
+; *****************************************************************************
+; *
+; *	Handle_Input ()
+; *
+; *	Reads the input device and updates the game.
+
+Handle_Input
+
+	; **** READ THE JOYSTICK **********************************************
+
+	CALL	@Call_Read_Joystick
+
+	; **** HANDLE STEERING ************************************************
+
+	; Don't allow turning if the player isn't moving
+	BANK	BANK_GAME
+	MOV	t0, speed
+	BANK	BANK_MAIN
+	CLC
+	CSA	t0, #0
+	JMP	:skip_steering
+
+	; Turn left
+	SNB	data8.2
+	JMP	:skip_steer_left
+	BANK	BANK_GAME
+	CLC
+	CSA	wheel_angle, #1
+	JMP	:skip_steer_left
+	STC
+	SUB	wheel_angle, #2
+:skip_steer_left
+	BANK	BANK_MAIN
+
+	; Turn right
+	SNB	data8.3
+	JMP	:skip_steer_right
+	BANK	BANK_GAME
+	STC
+	CSB	wheel_angle, #254
+	JMP	:skip_steer_right
+	CLC
+	ADD	wheel_angle, #2
+:skip_steer_right
+	BANK	BANK_MAIN
+
+:skip_steering
+
+	; **** HANDLE GAS PEDAL ***********************************************
+
+	; Speed up
+	SNB	data8.0
+	JMP	:skip_speed_up
+	BANK	BANK_GAME
+	CJE	speed, #99, :skip_speed_up
+	INC	speed
+:skip_speed_up
+	BANK	BANK_MAIN
+
+	; Slow down
+	SNB	data8.1
+	JMP	:skip_speed_down
+	BANK	BANK_GAME
+	CJE	speed, #0, :skip_speed_down
+	DEC	speed
+:skip_speed_down
+	BANK	BANK_MAIN
+
+	RETP
+
+End_Handle_Input
+
+ORG	$200
+
+; *****************************************************************************
+; *
+; *	Draw_Road_Scanline ()
+; *
+; *	Draws the current scanline of the road section of the screen.
+
+Draw_Road_Scanline
+
+	; **** PUT THE GRASS GRADIENT COLOR INTO <t5> *************************
+
+	CJB	scanline, #90, :gradient_done	; (4/6)
+	NOP					; (1)
+	NOP					; (1)
+
+	MOV	t0, #96				; (2) Base the gradient on the scanline counter
+	SUB	t0, scanline			; (2)
+	CLC					; (1)
+	RR	t0				; (1)
+	ADD	t0, #2				; (2)
+	MOV	t5, #COLOR8			; (2) Set the sky's base color
+	ADD	t5, t0				; (2) Modulate the sky intensity
+	JMP	:grass_color_set		; (3)
+
+:gradient_done
+	REPT	12
+	NOP
+	ENDR
+	MOV	t5, #COLOR8 + 5			; (2)
+	JMP	$ + 1				; (3)
+
+:grass_color_set
+
+	; **** DETERMINE THE CURVE OFFSET FOR THE SCANLINE ********************
+
+	MOV	t0, #96				; (2) Invert the scanline value to get the table offset
+	STC					; (1)
+	SUB	t0, scanline			; (2)
+
+	BANK	BANK_GAME				; (1)
+	CJB	wheel_angle, #128, :skip_wrap_angle	; (4/6) Wrap the angle around if it's past 64
+	MOV	t2, wheel_angle				; (2)   Bring the value within range
+	STC						; (1)
+	SUB	t2, #128				; (2)
+	MOV	t1, #128				; (2) 	Invert the value
+	STC						; (1)
+	SUB	t1, t2					; (2)
+	MOV	t3, #64					; (2) 	Add 64 to get to the second turn table
+	JMP	:angle_wrap_done			; (3)
+:skip_wrap_angle
+	MOV	t1, wheel_angle			; (2) Copy the wheel angle into <t1>
+	MOV	t3, #0				; (2) Add zero to stay within the first turn table
+	NOP					; (1)
+	NOP					; (1)
+	NOP					; (1)
+	NOP					; (1)
+	NOP					; (1)
+	NOP					; (1)
+	JMP	$ + 1				; (3)
+:angle_wrap_done
+
+	CLC					; (1) Halve the wheel angle
+	RR	t1				; (1)
+
+	CLC					; (1) Add the wheel angle to the current scanline curve offset
+	ADD	t0, t1				; (2)
+
+	CJBE	t0, #63, :skip_clip_offset	; (4/6) Make sure the offset is within the table
+	MOV	t0, #63				; (2)   Clamp the value
+	JMP	:offset_set			; (3)
+:skip_clip_offset
+	NOP					; (1)
+	NOP					; (1)
+	JMP	$ + 1				; (3)
+:offset_set
+
+	CLC
+	ADD	t0, t3				; (2) Set the direction of the offset
+
+	MOV	M, #curve_table >> 8		; (2) Point M:W at the curve table
+	MOV	W, #curve_table			; (2)
+	CLC					; (1)
+	ADD	W, t0				; (1) Add the offset into the curve table
+	IREAD					; (4) Get the curve value
+	MOV	scan_curve, W			; (1) Save the value
+
+	; **** DETERMINE WHICH ROAD SCANLINE SHADE SHOULD BE USED *************
+
+	; Draw the appropriate road scanline shade
+	MOV		t1, texel_hi			; (2) Copy the 8.8 texel index into t1:t0
+	MOV		t0, texel_lo			; (2)
+	FP_8_8_ADD 	t1, t0, #0, #%10000000		; (5) Round the texel up
+	CLC						; (1)
+	ADD		t1, tick_scroll			; (2)
+	AND		t1, #TICK_MAP_SIZE - 1		; (2) t0 %= map_size
+	CJAE		t1, #TICK_MAP_SIZE / 2, :draw_road_dark	; (4/6)
+	NOP						; (1)
+	NOP						; (1)
+
+:draw_road_lite
+
+	; **** DRAW THE LEFT-SIDE GRASS
+
+	MOV	t0, stripe_slope_hi		; (2) <t0> is the pixel counter
+	CLC					; (1)
+	ADD	t0, scan_curve			; (2) Add the scanline's curve offset
+:road_pixel_loop_0
+	AND	t5, #%00001111
+	MOV	VIDEO_REG, t5			; (2)
+	DELAY	( 20 - ( 4 + 2 ) - 2 )		; Fill out the rest of the pixel
+	DJNZ	t0, :road_pixel_loop_0		; (2/4) Next pixel
+
+	; Left-side overscan
+	DELAY	( OVERSCAN_BYPASS - 6 )
+
+	; **** DRAW THE LEFT-SIDE STRIPE
+
+	MOV	t0, road_slope_hi		; (2) <t0> is the pixel counter
+	CLC					; (1)
+	SUB	t0, stripe_slope_hi		; (2)
+:road_pixel_loop_1
+	MOV	VIDEO_REG, #COLOR_STRIPE_LITE & %00001111	; (2)
+	DELAY	( 20 - ( 4 + 2 ) )		; Fill out the rest of the pixel
+	DJNZ	t0, :road_pixel_loop_1		; (2/4) Next pixel
+
+	; **** DRAW THE ROAD
+
+	MOV	t0, #160			; (2) <t0> is the pixel counter
+	CLC					; (1)
+	SUB	t0, road_slope_hi		; (2)
+	CLC					; (1)
+	SUB	t0, road_slope_hi		; (2)
+:road_pixel_loop_2
+	MOV	VIDEO_REG, #COLOR_ROAD_DARK & %00001111		; (2)
+	DELAY	( 20 - ( 4 + 2 ) )		; Fill out the rest of the pixel
+	DJNZ	t0, :road_pixel_loop_2		; (2/4) Next pixel
+
+	; **** DRAW THE RIGHT-SIDE STRIPE
+
+	MOV	t0, road_slope_hi		; (2) <t0> is the pixel counter
+	CLC					; (1)
+	SUB	t0, stripe_slope_hi		; (2)
+:road_pixel_loop_3
+	MOV	VIDEO_REG, #COLOR_STRIPE_LITE & %00001111	; (2)
+	DELAY	( 20 - ( 4 + 2 ) )		; Fill out the rest of the pixel
+	DJNZ	t0, :road_pixel_loop_3		; (2/4) Next pixel
+
+	; **** DRAW THE RIGHT-SIDE GRASS
+
+	MOV	t0, stripe_slope_hi		; (2) <t0> is the pixel counter
+	SUB	t0, scan_curve			; (2) Add the scanline's curve offset
+:road_pixel_loop_4
+	AND	t5, #%00001111
+	MOV	VIDEO_REG, t5			; (2)
+	DELAY	( 20 - ( 4 + 2 ) - 2 )		; Fill out the rest of the pixel
+	DJNZ	t0, :road_pixel_loop_4		; (2/4) Next pixel
+
+	JMP	:road_done			; (3)
+
+	; **** DRAW THE DARK VERSION OF THE ROAD ******************************
+
+:draw_road_dark
+
+	; **** DRAW THE LEFT-SIDE GRASS
+
+	MOV	t0, stripe_slope_hi		; (2) <t0> is the pixel counter
+	CLC					; (1)
+	ADD	t0, scan_curve			; (2) Add the scanline's curve offset
+:road_pixel_loop_0_d
+	AND	t5, #%00001111
+	MOV	VIDEO_REG, t5			; (2)
+	DELAY	( 20 - ( 4 + 2 ) - 2 )		; Fill out the rest of the pixel
+	DJNZ	t0, :road_pixel_loop_0_d	; (2/4) Next pixel
+
+	; Left-side overscan
+	DELAY	( OVERSCAN_BYPASS - 6 )
+
+	; **** DRAW THE LEFT-SIDE STRIPE
+
+	MOV	t0, road_slope_hi		; (2) <t0> is the pixel counter
+	CLC					; (1)
+	SUB	t0, stripe_slope_hi		; (2)
+:road_pixel_loop_1_d
+	MOV	VIDEO_REG, #COLOR_STRIPE_DARK & %00001111	; (2)
+	DELAY	( 20 - ( 4 + 2 ) )		; Fill out the rest of the pixel
+	DJNZ	t0, :road_pixel_loop_1_d	; (2/4) Next pixel
+
+	; **** DRAW THE ROAD
+
+	MOV	t0, #160			; (2) <t0> is the pixel counter
+	CLC					; (1)
+	SUB	t0, road_slope_hi		; (2)
+	CLC					; (1)
+	SUB	t0, road_slope_hi		; (2)
+:road_pixel_loop_2_d
+	MOV	VIDEO_REG, #COLOR_ROAD_DARK & %00001111		; (2)
+	DELAY	( 20 - ( 4 + 2 ) )		; Fill out the rest of the pixel
+	DJNZ	t0, :road_pixel_loop_2_d	; (2/4) Next pixel
+
+	; **** DRAW THE RIGHT-SIDE STRIPE
+
+	MOV	t0, road_slope_hi		; (2) <t0> is the pixel counter
+	CLC					; (1)
+	SUB	t0, stripe_slope_hi		; (2)
+:road_pixel_loop_3_d
+	MOV	VIDEO_REG, #COLOR_STRIPE_DARK & %00001111	; (2)
+	DELAY	( 20 - ( 4 + 2 ) )		; Fill out the rest of the pixel
+	DJNZ	t0, :road_pixel_loop_3_d	; (2/4) Next pixel
+
+	; **** DRAW THE RIGHT-SIDE GRASS
+
+	MOV	t0, stripe_slope_hi		; (2) <t0> is the pixel counter
+	SUB	t0, scan_curve			; (2) Add the scanline's curve offset
+:road_pixel_loop_4_d
+	AND	t5, #%00001111
+	MOV	VIDEO_REG, t5			; (2)
+	DELAY	( 20 - ( 4 + 2 ) - 2 )		; Fill out the rest of the pixel
+	DJNZ	t0, :road_pixel_loop_4_d	; (2/4) Next pixel
+
+	JMP	$ + 1				; (3)
+
+:road_done
+
+	; Right-side overscan
+	DELAY	( OVERSCAN_BYPASS - 2 - 18 - 18 - 15 - 20 )
+
+	; **** UPDATE ROAD TICK COUNTER ***************************************
+
+	FP_8_8_ADD	texel_hi, texel_lo, texel_inc_hi, texel_inc_lo	; (5) Increment the texel index
+	AND		texel_hi, #TICK_MAP_SIZE - 1
+	MOV		t1, #0						; (2)
+	MOV		t0, #%01111111					; (2)
+	FP_8_8_SUB	texel_inc_hi, texel_inc_lo, t1, ddx		; (5) Increment the texel increment
+	ADD		ddx, #8
+
+	; **** UPDATE ROAD SLOPE *****************************************************
+
+	CLC					; (1)
+	ADD	road_slope_lo,   #%10001111	; (2)
+	SUBB	road_slope_hi,   C		; (2)
+	CLC					; (1)
+	ADD	stripe_slope_lo, #%10111111	; (2)
+	SUBB	stripe_slope_hi, C		; (2)
+
+	BANK	BANK_MAIN			; (1)
+
+	RETP					; (3)
+
+End_Draw_Road_Scanline
+
+; *****************************************************************************
+; *
+; *	Do_VSync_Logic ()
+; *
+; *	Updates game logic during the vertical sync.
+
+Do_VSync_Logic
+
+	CALL	@Call_Handle_Input
+
+	BANK	BANK_GAME				; (1)
+
+	; **** UPDATE SCROLLING MODE (TICK MAP) *******************************
+
+	STC						; (1)
+	SUB	tick_scroll, speed			; (2)
+	AND	tick_scroll, #TICK_MAP_SIZE - 1		; (2)
+
+	; **** UPDATE SCROLLING SKYLINE ***************************************
+
+	; Reduce the speed to a value that can be added reasonable to the speed
+	; accumulator and store it in <t0>
+	MOV	t0, speed				; (2)
+	CLC						; (1)
+	RL	t0					; (1)
+
+	; Add the reduced speed to the speed accumulator and check for overflow
+	BANK	BANK_MISC				; (1)
+	CLC						; (1)
+	ADD	sa, t0					; (2)
+	;INC	blimp_x					; (1)
+	BANK	BANK_GAME				; (1)
+
+	; If the speed accumulator overflowed, it's time to scroll the skyline
+	SC						; (1)
+	JMP	no_scroll_city
+
+	; Get the steering wheel angle
+	MOV	t0, wheel_angle
+	BANK	BANK_MAIN				; (1)
+
+	; Is the player turning right or left?
+	CJB	t0, #128, scroll_city_left		; (4/6)
+
+	; LEFT
+	STC						; (1)
+	SUB	t0, #128				; (2)
+	CLC						; (1)
+	RR	t0					; (1)
+	CLC						; (1)
+	RR	t0					; (1)
+	CLC						; (1)
+	RR	t0					; (1)
+	CLC						; (1)
+	RR	t0					; (1)
+	CLC						; (1)
+	RR	t0					; (1)
+	CLC						; (1)
+	RR	t0					; (1)
+	CLC						; (1)
+	ADD	bg_scroll, t0				; (2)
+	JMP	scroll_city_done			; (3)
+
+scroll_city_left
+
+	; RIGHT
+	MOV	t1, #128				; (2)
+	STC						; (1)
+	SUB	t1, t0					; (2)
+	CLC						; (1)
+	RR	t1					; (1)
+	CLC						; (1)
+	RR	t1					; (1)
+	CLC						; (1)
+	RR	t1					; (1)
+	CLC						; (1)
+	RR	t1					; (1)
+	CLC						; (1)
+	RR	t1					; (1)
+	CLC						; (1)
+	RR	t1					; (1)
+	STC						; (1)
+	SUB	bg_scroll, t1				; (2)
+
+scroll_city_done
+
+no_scroll_city
+
+	BANK	BANK_MAIN
+
+	; Pad the remainder of the vertical sync pulse
+	DELAY	( 20_318 - 2 - 1 - 42 )
+
+	RETP
+
+End_Do_VSync_Logic
+
+ORG	$400
+
+; **** ASSETS AND LOOKUP TABLES ***********************************************
+
+; **** SINE-BASED CURVE TABLE *************************************************
+
+; This table is a segment of a sine wave that directly maps to the incremental
+; distortion of each scanline as the track is rendered during a turn. The turn
+; is entered and exited by "lowering" and "raising" the value of this table onto
+; the otherwise straight course.
+
+curve_table
+
+	; Left turn curve
+        DW      $E3, $E4, $E5, $E6, $E6, $E7, $E8, $E9
+        DW      $EA, $EA, $EB, $EC, $ED, $EE, $EE, $EF
+        DW      $F0, $F0, $F1, $F2, $F3, $F3, $F4, $F5
+        DW      $F5, $F6, $F6, $F7, $F8, $F8, $F9, $F9
+        DW      $FA, $FA, $FB, $FB, $FC, $FC, $FD, $FD
+        DW      $FD, $FE, $FE, $FE, $FE, $FE, $FE, $FE
+        DW      $FE, $FE, $FE, $FE, $FE, $FF, $FF, $FF
+        DW      $FF, $FF, $FF, $FF, $FF, $FF, $00, $00
+
+	; Right turn curve
+	DW      $1D, $1C, $1B, $1A, $1A, $19, $18, $17
+	DW      $16, $16, $15, $14, $13, $12, $12, $11
+	DW      $10, $10, $0F, $0E, $0D, $0D, $0C, $0B
+	DW      $0B, $0A, $0A, $09, $08, $08, $07, $07
+	DW      $06, $06, $05, $05, $04, $04, $03, $03
+	DW      $03, $02, $02, $02, $02, $02, $02, $02
+	DW      $02, $02, $02, $02, $02, $01, $01, $01
+        DW      $01, $01, $01, $01, $01, $01, $00, $00
+
+; **** SKYLINE TABLE **********************************************************
+
+ORG	$500
+
+skyline
+
+       DW	10,10,10,10,20,30,20,20,15,15,35,50,35,35,40,40,20,20,20,40,40,39,39,20,20,50,50,50,40,40,50,40
+       DW	10,10,30,30,40,40,40,30,30,10,35,35,35,45,35,35,50,50,50,49,48,47,46,30,30,40,40,55,40,20,20,30
+       DW	10,10,10,10,20,30,20,20,15,15,35,50,35,35,40,40,20,20,20,40,40,39,39,20,20,50,50,50,40,40,50,40
+       DW	10,10,30,30,40,40,40,30,30,10,35,35,35,45,35,35,50,50,50,49,48,47,46,30,30,40,40,55,40,20,20,30
+       DW	10,10,10,10,20,30,20,20,15,15,35,50,35,35,40,40,20,20,20,40,40,39,39,20,20,50,50,50,40,40,50,40
+       DW	10,10,30,30,40,40,40,30,30,10,35,35,35,45,35,35,50,50,50,49,48,47,46,30,30,40,40,55,40,20,20,30
+       DW	10,10,10,10,20,30,20,20,15,15,35,50,35,35,40,40,20,20,20,40,40,39,39,20,20,50,50,50,40,40,50,40
+       DW	10,10,30,30,40,40,40,30,30,10,35,35,35,45,35,35,50,50,50,49,48,47,46,30,30,40,40,55,40,20,20,30

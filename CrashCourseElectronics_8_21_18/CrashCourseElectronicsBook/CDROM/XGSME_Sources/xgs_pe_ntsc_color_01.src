@@ -1,0 +1,567 @@
+; /////////////////////////////////////////////////////////////////////////////
+;
+; XGS_PE_NTSC_COLOR_01.SRC - Mono Test
+; This demo draws a three colored bars midway on the screen
+; note the frequency setting of the clock and that instead of using
+; "time" in uS for delay calculations we instead need to think in terms
+; of "color clocks" or a multiple thereof.
+; also note the program is about to page spill, if you add any more code watch
+; out that you make sure to add PAGE instructions before jumps
+;
+; Architecture 3 - Media System
+; 4-bit video drive
+;
+;          Audio  upper 4-bits                    |          Intensity (Luma) lower 4-bits
+;
+; | AUD_ISEL3 | AUD_ISEL2 | AUD_ISEL1 | AUD_ISEL0 | VID_ISEL3 | VID_ISEL2 | VID_ISEL1 | VID_ISEL0 |
+;
+;      b7          b6          b5          b4          b3          b2           b1         b0                                             
+;      
+;
+; The Media Hardware Port Mapping Bits from the SX28
+;
+;Port Bit	XGS PE Bit	Description
+
+; RC0 		VID_ISEL0	Bit 0 of the intensity signal that controls LUMA.
+; RC1 		VID_ISEL1	Bit 1 of the intensity signal that controls LUMA.
+; RC2 		VID_ISEL2  	Bit 2 of the intensity signal that controls LUMA.
+; RC3 		VID_ISEL3 	Bit 3 of the intensity signal that controls LUMA.
+
+; RC4 		AUD_ISEL0	Bit 0 of the audio value.
+; RC5  		AUD_ISEL1	Bit 1 of the audio value.
+; RC6  		AUD_ISEL2	Bit 2 of the audio value.
+; RC7  		AUD_ISEL3	Bit 3 of the audio value.
+;
+; Notes on video hardware specs
+;
+; Intensity .3v (6) approx. black, 0.0v sync (0), allows 10 shades roughly :)
+;
+; Refer to the documents below for information on video technology and the RS-170 NTSC timings
+; http://www.ee.washington.edu/conselec/CE/kuhn/ntsc/95x4.htm
+; http://www.bealecorner.com/trv900/tech/RS170A.jpg
+; http://www.bealecorner.com/trv900/tech/
+; http://www.maxim-ic.com/appnotes.cfm/appnote_number/734/ln/en
+; http://pdfserv.maxim-ic.com/en/an/AN734.pdf
+;
+; video signal looks like this roughly:
+;	
+; Blank and White signal		
+;		  	                              
+;		                                                      <-                            video, pixel data 52.6us                  ->
+;(white)   1.0-1.5V                                                   *******************************************************.....************** 
+;		                                                      *							 		       *	
+;		 "front porch"                                        *                                                                        *
+;		                                                      *                                                                        *
+;		  1.5us              <-          4.7us              ->*                                                                        *
+;(black)  0.3V    ****               **********************************                                                                        *
+;		     *               *        "back porch"
+;		     *<-    4.7us  ->* 
+;(sync)	   0.0V      *****************
+;		       hsync pulse
+;	  	  <----------------------------------------------                63.5us                    ------------------------------------>
+;
+; Color Signal		
+;		  	                              
+;		                                                      <-                            video, pixel data 52.6us                  ->
+;(white)   1.0-1.5V                                                   *******************************************************.....************** 
+;		                     <-          4.7us              ->*							 		       *	
+;		 "front porch"                color burst 9 cycles    *                                                                        *
+;		                         /\      /\   2.5us      /\   *                                                                        *
+;		  1.5us             .6us/  \    /  \            /  \  *                                                                        *
+;(black)  0.3V    ****               ***    \  /    \  ....... /    ***                                                                        *
+;		     *               *       \/      \/             1.6us
+;		     *<-    4.7us  ->* 
+;(sync)	   0.0V      *****************        "back porch"
+;		       hsync pulse
+;	  	  <----------------------------------------------                63.5us                    ------------------------------------>
+;		
+; /////////////////////////////////////////////////////////////////////////////
+; Set device attributes
+; /////////////////////////////////////////////////////////////////////////////
+
+	DEVICE 	SX28L, STACKX, OPTIONX, TURBO
+	IRC_CAL IRC_FAST
+	
+	RESET	Start
+	FREQ 	42_950_000 	; this is a directive to the ide only
+				; it sets the SX-KEY oscillator to 42.950Mhz
+				; or 12 times the color burst of 3.57Mhz
+				; this is about the maximum the SX-KEY can
+				; drive the pico edition due to all the noise
+				; an wires all over the place. The extra xtal osc
+				; that comes with the kit runs at 22 times the 
+				; color burst approx. 78.750Mhz giving you more 
+				; speed and flexibility
+
+CLK_SCALE	EQU	12 	; FREQ / 3.579545 (NTSC color burst)
+				; we are thinking in terms of "color clocks"
+				; for this demo rather than microsecond as we 
+				; usually do, thus the clk_scale is how many
+				; clocks does it take to make a single color_clock
+				; is how this number is arrived at, in other 
+				; words at 42.950Mhz the instruction cycle is about
+				; 23ns, a color clock is 280ns, thus 12 instructions
+				; per color clock
+
+; /////////////////////////////////////////////////////////////////////////////
+; Defines
+; /////////////////////////////////////////////////////////////////////////////
+
+; sync and black
+
+BLACK_LEVEL	EQU	(4)		; approx. 0.3v
+SYNC		EQU	(0)		; no color burst with 0.0v
+BLACK		EQU	(BLACK_LEVEL)	; no color burst with 0.3v
+
+
+CBURST_LOW	EQU     (2)		; artificial color burst low
+CBURST_HIGH     EQU     (6)		; artificial color burst high
+
+DARKGRAY	EQU	(8) 		; some shades
+GRAY		EQU	(10)
+LIGHTGRAY	EQU	(12)
+WHITE		EQU	(15)
+
+OVERSCAN_COLOR	EQU	GRAY		; color drawn in overscan areas
+
+; /////////////////////////////////////////////////////////////////////////////
+; Global variables
+; /////////////////////////////////////////////////////////////////////////////
+		org	$08
+; these are just working vars for the code, nothing special
+
+scanline	ds 	1 	; scanline counter
+counter		ds 	1	; general counter
+counter2	ds 	1 	; general counter
+x_pos		ds	1 	; x position
+y_pos		ds	1 	; y position
+var_0		ds	1 	; working vars
+var_1		ds	1
+luma		ds	1 	; general luma
+
+; /////////////////////////////////////////////////////////////////////////////
+; Macros
+; /////////////////////////////////////////////////////////////////////////////
+
+DELAY MACRO clocks
+; this new macro is slightly different than the one found in othe demos
+; this macro can handle large delays up to 25,500 cycles, so to call it use the following
+; constructions
+
+; cycle delay
+; DELAY(number_of_clocks)
+
+; for 80 mhz clock, microsecond parameters
+; DELAY(80*microseconds)
+; example you want a 4.5 uS delay
+; 80*4.5 = 36
+; DELAY(36)
+
+; the preprocessor can NOT do floating point math, so another construction would be to scale
+; all values by 10 then multiply by 8 rather than 80, for example, a 4.5 uS delay could be
+; written
+; DELAY(8*45)
+; which is a little more intuitive
+
+; first compute fractional remainder of 10 and delay
+IF (((clocks) // 10) > 0)
+
+; first 3 clock chunks
+	REPT (((clocks) // 10)/3)
+	JMP $ + 1
+	ENDR
+
+; now the remainder if any
+
+	REPT (((clocks) // 10)//3)
+	NOP
+	ENDR
+ENDIF
+
+; next multiples of 100
+IF (((clocks) / 100) >= 1)
+
+; delay 100*(clocks/100), loop equals 100, therefore 1*(clocks/100) iterations
+	mov counter, #((clocks)/100) 	; (2)
+:Loop					
+
+	mov counter2, #24	 	; (2)
+:Loop100					
+	djnz counter2, :Loop100		; (4/2)
+
+	djnz counter, :Loop		; (4/2)
+
+ENDIF
+
+; last compute whole multiples of 10, and delay
+IF (( ((clocks) // 100) / 10) >= 1)
+
+; delay 10*(clocks/10), loop equals 10, therefore (clocks/10) iterations
+	mov counter, #( ((clocks) // 100) / 10) 	; (2)
+:Loop2					
+	jmp $ + 1			; (3)
+	jmp $ + 1			; (3)
+	djnz counter, :Loop2		; (4/2)
+
+ENDIF
+
+ENDM
+
+; /////////////////////////////////////////////////////////////////////////////
+; Data watches
+; /////////////////////////////////////////////////////////////////////////////
+
+;		WATCH	luma,8,UDEC
+
+; /////////////////////////////////////////////////////////////////////////////
+; Subroutines
+; /////////////////////////////////////////////////////////////////////////////
+
+		org 	$000
+
+; /////////////////////////////////////////////////////////////////////////////
+;  Begin program after restart
+; /////////////////////////////////////////////////////////////////////////////
+
+Start		
+		bank	#$10		; set bank to known value
+
+		; Initialize I/O controller for Pico Edition A->Input, B->Output, C->Output
+
+		mov	w, #$1F		; Set mode register to write direction register
+		mov	m, w
+
+		mov	RA, #%00000000	; Set port A output latch to zero
+		mov	!RA, #%00000000	; Set port A direction
+
+		mov	RC, #%00000000	; Set port C output latch to zero
+		mov	!RC, #%00000000	; Set port C direction
+
+		mov 	!RB, #%11111111 ; Set port B direction 
+		mov	w, #$1E		; Set mode register to write pullup resistor
+		mov	m, w
+		mov	!RB, #%00000000 ; Set joystick inputs pullups on (0=on, 1=off)
+
+; /////////////////////////////////////////////////////////////////////////////
+;  Main program loop
+; /////////////////////////////////////////////////////////////////////////////
+
+Main		
+
+; 192 scanlines of active video 
+
+Begin_Raster
+
+		mov scanline, #192	; render 192 active scanlines
+Raster_Loop1
+
+; front porch 1.5us 
+		mov RC, #BLACK		; ( 2 cycles ) black
+		DELAY (CLK_SCALE*5 - 2)
+		
+; hsync 4.7us
+		mov RC, #SYNC		; ( 2 cycles ) sync
+		DELAY (CLK_SCALE*16 - 2)
+
+; back porch 4.7us = pre burst .6us + burst 2.5us + post burst 1.6us
+;		mov RC, #BLACK		; ( 2 cycles ) sync
+;		DELAY (CLK_SCALE*16 - 2)
+		
+; pre-burst .6 us		
+		mov RC, #BLACK		; ( 2 cycles ) sync
+		DELAY (CLK_SCALE*2 - 2)
+
+; color-burst 2.5us		
+;		mov RC, #BLACK		; ( 2 cycles ) sync
+;		DELAY (CLK_SCALE*10 - 2)
+
+; synthesize color burst tone
+		REPT 10
+		mov RC, #CBURST_HIGH	; ( 2 cycles ) 
+		DELAY (6 - 2)
+
+		mov RC, #CBURST_LOW	; ( 2 cycles ) 
+		DELAY (6 - 2)
+		ENDR
+
+; post-burst 1.6 us		
+		mov RC, #BLACK		; ( 2 cycles ) sync
+		DELAY (CLK_SCALE*6 - 2)
+
+; draw scanline (52.6 us)
+
+		; step out to mid screen approx. 52.6us/2
+		DELAY (CLK_SCALE*85)
+
+
+; draw color bar 1 with 0 degrees (approx) phase shift (yellow), draw 5 complete color clocks
+
+		REPT 5
+		mov RC, #CBURST_HIGH+6	; ( 2 cycles ) 
+		DELAY (6 - 2)
+
+		mov RC, #CBURST_LOW+6	; ( 2 cycles ) 
+		DELAY (6 - 2)
+		ENDR
+; delay a bit, this causes a phase shift in the color phase we are about the synthesize again
+; the phase delay is simply the time it takes for the (nops / 3.579545-1) * 360 degrees
+; approximately with a 42.950Mhz clock roughly, we get 23ns per instruction cycle, a single 
+; color clock at 3.579545Mhz is 280ns, therefore the formula is:
+; phase angle = 360 * (t_delay) / (t_color_clock), therefore per clock cycle at 42.950Mhz 
+; we get phase_angle = 360 * (23ns) / 280ns = 15 degrees color phase shift per instruction clock roughly
+
+		; 30 degree phase shift
+		nop	; (1 cycle delay)
+		nop	; (1 cycle delay) 
+
+; draw color bar 2 with a phase shift equal to 30 degrees (orange), draw 5 complete color clocks
+
+		REPT 5
+		mov RC, #CBURST_HIGH+6	; ( 2 cycles ) 
+		DELAY (6 - 2)
+
+		mov RC, #CBURST_LOW+6	; ( 2 cycles ) 
+		DELAY (6 - 2)
+		ENDR
+
+		; another 30 degree phase shift
+		nop	; (1 cycle delay)
+		nop	; (1 cycle delay) 
+
+; draw color bar 3 with a phase shift equal to 60 degrees total (lavender), draw 5 complete color clocks
+
+		REPT 5
+		mov RC, #CBURST_HIGH+6	; ( 2 cycles ) 
+		DELAY (6 - 2)
+
+		mov RC, #CBURST_LOW+6	; ( 2 cycles ) 
+		DELAY (6 - 2)
+		ENDR
+
+
+; now draw black for the remainder of the scanline
+
+		mov RC, #BLACK
+                DELAY (CLK_SCALE*190 - CLK_SCALE*85 - 5*12 - 2 - 5*12 - 2 - 5*12 - 2 - 4)
+; loop
+		djnz scanline, Raster_Loop1
+
+; /////////////////////////////////////////////////////////////////////////////
+; VERTICAL BLANKING AND SYNC 
+; /////////////////////////////////////////////////////////////////////////////
+
+; /////////////////////////////////////////////////////////////////////////////
+; BOTTOM SCREEN OVERSCAN
+; /////////////////////////////////////////////////////////////////////////////
+
+		mov scanline, #28
+Vblank_Loop1
+
+IF 0
+; front porch 1.5us 
+		mov RC, #BLACK		; ( 2 cycles ) black
+		DELAY (CLK_SCALE*5 - 2)
+		
+; hsync 4.7us
+		mov RC, #SYNC		; ( 2 cycles ) sync
+		DELAY (CLK_SCALE*16 - 2 )
+
+; back porch 4.7us = pre burst .6us + burst 2.5us + post burst 1.6us
+;		mov RC, #BLACK		; ( 2 cycles ) sync
+;		DELAY (CLK_SCALE*16 - 2)
+		
+; pre-burst .6 us		
+		mov RC, #BLACK		; ( 2 cycles ) sync
+		DELAY (CLK_SCALE*2 - 2)
+
+; color-burst 2.5us		
+		mov RC, #BLACK		; ( 2 cycles ) sync
+		DELAY (CLK_SCALE*10 - 2)
+
+; post-burst 1.6 us		
+		mov RC, #BLACK		; ( 2 cycles ) sync
+		DELAY (CLK_SCALE*6 - 2)
+	
+ENDIF
+
+; front porch 1.5us 
+		mov RC, #BLACK		; ( 2 cycles ) black
+		DELAY (CLK_SCALE*5 - 2)
+		
+; hsync 4.7us
+		mov RC, #SYNC		; ( 2 cycles ) sync
+		DELAY (CLK_SCALE*16 - 2)
+
+; back porch 4.7us = pre burst .6us + burst 2.5us + post burst 1.6us
+;		mov RC, #BLACK		; ( 2 cycles ) sync
+;		DELAY (CLK_SCALE*16 - 2)
+		
+; pre-burst .6 us		
+		mov RC, #BLACK		; ( 2 cycles ) sync
+		DELAY (CLK_SCALE*2 - 2)
+
+; color-burst 2.5us		
+		mov RC, #BLACK	; ( 2 cycles ) sync
+		DELAY (CLK_SCALE*10 - 2)
+
+IF 0
+; synthesize color burst
+		REPT 10
+		mov RC, #CBURST_HIGH	; ( 2 cycles ) 
+		DELAY (6 - 2)
+
+		mov RC, #CBURST_LOW	; ( 2 cycles ) 
+		DELAY (6 - 2)
+
+		ENDR
+ENDIF
+
+; post-burst 1.6 us		
+		mov RC, #BLACK		; ( 2 cycles ) sync
+		DELAY (CLK_SCALE*6 - 2)
+
+; draw scanline (52.6 us)
+		mov RC, #OVERSCAN_COLOR		; ( 2 cycles ) sync
+		DELAY (CLK_SCALE*190 - 2 - 4)
+		
+; loop
+		djnz scanline, Vblank_Loop1
+
+; /////////////////////////////////////////////////////////////////////////////
+; END BOTTOM SCREEN OVERSCAN
+; /////////////////////////////////////////////////////////////////////////////
+
+
+; /////////////////////////////////////////////////////////////////////////////
+; VERTICAL SYNC PULSE
+; /////////////////////////////////////////////////////////////////////////////
+
+IF 1
+; simple VSYNC with no serrations, i.e. HSYNC pulses
+		mov scanline, #4
+Vblank_Loop2 
+		mov RC, #SYNC		; ( 2 cycles ) sync
+		DELAY (CLK_SCALE*227 - 2 - 4)
+		djnz scanline, Vblank_Loop2
+ENDIF
+
+IF 0
+; more accurate VSYNC with serrations and HSYNC pulses
+		mov scanline, #4
+Vblank_Loop2
+
+; front porch 1.5us 
+		mov RC, #SYNC		; ( 2 cycles ) black
+		DELAY (CLK_SCALE*15 - 2)
+		
+; hsync 4.7us
+		mov RC, #BLACK		; ( 2 cycles ) sync
+		DELAY (CLK_SCALE*47 - 2)
+		
+; back porch 4.7us
+		mov RC, #SYNC		; ( 2 cycles ) sync
+		DELAY (CLK_SCALE*47 - 2)
+
+; draw scanline (52.6 us)
+		mov RC, #SYNC		; ( 2 cycles ) sync
+		DELAY (CLK_SCALE*526 - 2 - 4)
+		
+; loop
+		djnz scanline, Vblank_Loop2
+
+ENDIF
+
+; /////////////////////////////////////////////////////////////////////////////
+; END VERTICAL SYNC PULSE
+; /////////////////////////////////////////////////////////////////////////////
+
+
+; /////////////////////////////////////////////////////////////////////////////
+; TOP SCREEN OVERSCAN
+; /////////////////////////////////////////////////////////////////////////////
+
+		mov scanline, #38	; render scanlines
+Vblank_Loop3
+
+IF 0
+; front porch 1.5us 
+
+		mov RC, #BLACK		; ( 2 cycles ) black
+		DELAY (CLK_SCALE*5 - 2)
+		
+; hsync 4.7us
+		mov RC, #SYNC		; ( 2 cycles ) sync
+		DELAY (CLK_SCALE*16 - 2)
+		
+; back porch 4.7us = pre burst .6us + burst 2.5us + post burst 1.6us
+;		mov RC, #BLACK		; ( 2 cycles ) sync
+;		DELAY (CLK_SCALE*16 - 2)
+		
+; pre-burst .6 us		
+		mov RC, #BLACK		; ( 2 cycles ) sync
+		DELAY (CLK_SCALE*2 - 2)
+
+; color-burst 2.5us		
+		mov RC, #BLACK		; ( 2 cycles ) sync
+		DELAY (CLK_SCALE*10 - 2)
+
+; post-burst 1.6 us		
+		mov RC, #BLACK		; ( 2 cycles ) sync
+		DELAY (CLK_SCALE*6 - 2)
+
+ENDIF
+
+
+; front porch 1.5us 
+		mov RC, #BLACK		; ( 2 cycles ) black
+		DELAY (CLK_SCALE*5 - 2)
+		
+; hsync 4.7us
+		mov RC, #SYNC		; ( 2 cycles ) sync
+		DELAY (CLK_SCALE*16 - 2)
+
+; back porch 4.7us = pre burst .6us + burst 2.5us + post burst 1.6us
+;		mov RC, #BLACK		; ( 2 cycles ) sync
+;		DELAY (CLK_SCALE*16 - 2)
+		
+; pre-burst .6 us		
+		mov RC, #BLACK		; ( 2 cycles ) sync
+		DELAY (CLK_SCALE*2 - 2)
+
+; color-burst 2.5us		
+		mov RC, #BLACK		; ( 2 cycles ) sync
+		DELAY (CLK_SCALE*10 - 2)
+
+IF 0
+; synthesize color burst
+		REPT 10
+
+		mov RC, #CBURST_HIGH	; ( 2 cycles ) 
+		DELAY (6 - 2)
+
+		mov RC, #CBURST_LOW	; ( 2 cycles ) 
+		DELAY (6 - 2)
+
+		ENDR
+ENDIF
+
+; post-burst 1.6 us		
+		mov RC, #BLACK		; ( 2 cycles ) sync
+		DELAY (CLK_SCALE*6 - 2)
+
+		
+; draw scanline (52.6 us)
+		mov RC, #OVERSCAN_COLOR	; ( 2 cycles ) sync
+
+		DELAY (CLK_SCALE*190 - 2 - 4)
+; loop
+		djnz scanline, Vblank_Loop3
+
+; /////////////////////////////////////////////////////////////////////////////
+; END TOP SCREEN OVERSCAN
+; /////////////////////////////////////////////////////////////////////////////
+
+		jmp Begin_Raster
+
+; /////////////////////////////////////////////////////////////////////////////
+

@@ -1,0 +1,521 @@
+; MIC_PLASMA_04.SRC
+
+	TITLE	"Plasma demo v04"
+; Plasma effect for the XGS ME
+; Works only at 80 MHz
+
+; This file needs 3 include files:
+; 	general_define.src:  Defines constants (EQU) and some system variables
+;	general_macro.src: Useful general purpose macro definitions and system functions
+;	general_function.src: System functions that are called instead of macro
+
+	DEVICE	SX52, OSCHS3, XTLBUFD, IFBD	; Set everything for the XGS ME
+	RESET	Start
+	FREQ 	80_000_000 	; this is a directive to the ide only
+			  	; if you want to put the XGS ME into RUN mode
+			  	; you must make sure you go into the 
+				; device settings and make sure that
+				; HS3 is enabled, and crystal drive and
+				; feedback are disabled and then re-program
+				; the chip in PGM mode and then switch it to RUN
+
+	IRC_CAL IRC_FAST	; Prevent a warning
+	ID	"micplsma"	; ID string
+
+;##############################################################################
+
+
+; Global variables, starting at bank #2
+		org	$20
+
+; I'm using Remz' code here, I only modified it to use a black overscan
+; instead of the blue.
+include		"general_define.src"
+
+	org $30
+pixel		ds 	1
+horzPtr1	ds	1	; Sine table "pointer"
+horzPtr2	ds 	1	; Dito
+temp		ds	1	; Temporary
+temp2		ds	1	; ...
+vertPtr1	ds 	1	; ...
+vertPtr2	ds	1
+cnt1		ds	1	; Loop counter and temporary
+cnt2		ds	1	; ...
+scroller1	ds	1	; Scroller 1 position
+scroller2	ds	1	; Scroller 2 position
+scroller1_2	ds	1	; Backup
+scroller2_2	ds	1	; ...
+xCnt		ds	1	; Loop counter
+yCnt		ds	1
+
+	org $40
+chroma_cnt	ds	1	; Controls the frequency of burst phase changes
+chroma_delta	ds	1	; Controls the amplitude of burst phase changes
+
+
+include		"general_macro.src"
+include 	"astaroth.mus"	; Include song data
+include 	"xgsmp.src"	; Include music player
+
+;##############################################################################
+
+		org 	$0	; Set the start of the program code
+
+
+		org	$+2	; leave 2 free word here for the debugger
+
+; Jump table
+InitMusic	jmp @XgsMpInit
+UpdateMusic	jmp @XgsMpUpdate
+
+
+Start		; Our real code starts here
+
+		; Initialize variables
+		bank $40
+		mov chroma_cnt,#0
+		mov chroma_delta,#1
+
+		bank $30		
+		mov vertPtr1,#0
+		mov vertPtr2,#0
+		mov yCnt,#0
+
+		mov 10,#$00
+		mov 11,#$08
+		call InitMusic
+		_bank $20
+
+		INITIALIZE_VIDEO	; Initialize I/O controller for video
+
+Begin_Raster	; Loop here for each scanline
+
+		; Use 192 active scanlines
+		mov scanline, #192 
+		mov !OPTION, #%11000100		; Sets prescaler to 1:32 
+
+Raster_Loop1
+		PREPARE_VIDEO_HORIZ burst_phase	; Prepare required video signal for a scanline
+		clr RTCC
+		bank $30			; 1
+		mov RE, #BLACK 			; 2. Output black
+
+		mov xCnt,#100			; 2. 100 "pixels"
+
+		; Copy pointers for use in the scanline loop
+		mov cnt1,horzPtr1		; 2
+		mov cnt2,horzPtr2 		; 2 
+		bank $20			; 1 (10)
+
+
+		DELAY(492)
+
+		; Convert the scroller position (0..255) to a string
+		; position (0..31) and character offset (0..7) and
+		; read a character from the string.
+		bank $30		; 1
+		mov M,#TEXT_PAGE	; 1. Set page to read from
+		mov W,scroller1		; 1. Scroller position
+		mov temp,W		; 1
+		and W,#7		; 1 
+		mov temp2,W		; 1. Save character row (0..7)
+		clc			; 1. Divide by 8 (char height)
+		rr temp			; 1  ...	
+		clc			; 1  ...
+		rr temp			; 1  ...
+		clc			; 1  ...
+		rr temp			; 1  ...
+		mov W,temp		; 1. String position (0..31)
+		iread			; 4 (17)
+
+		; Multiply by 8 (height of char)
+		mov temp,W		; 1. temp=x
+		add W,temp		; 1. W=x*2
+		mov temp,W		; 1. temp=x*2
+		add W,temp		; 1. W=x*4
+		mov temp,W		; 1. temp=x*4
+		add W,temp		; 1. W=x*8
+
+		; Now read one row of character data
+		mov M,#FONT_PAGE	; 1. Set page to read from
+		add W,temp2		; 1. Offset = char*8 + (scroller&7)
+		iread			; 4. Read one byte (=row)  
+		mov pixel,W		; 1. Save it 
+		mov temp,#8		; 2 (9). Number of pixels to draw
+
+		; Draw the row	
+:Draw_char_line_1
+		mov W,#(COLOR14+8)	; 1
+		rr pixel		; 1. Place lsb in C
+		sc			; 2 / 1. Skip if bit is set
+		mov W,#BLACK		; 1. Bit was clear, should be black 
+		mov RE,W		; 1. Output color
+		DELAY(7)
+		djnz temp,:Draw_char_line_1 ; 4 / 2
+		mov RE,#BLACK		; 2. Output black
+		bank $20		; 1	
+		DELAY(40)
+
+		; Set up the plasma rasterizer
+		bank $30		; 1. Set active register bank
+		nop			; 1. Delay for a few cycles..  
+		nop			; 1
+		nop			; 1 (4)
+
+		; Draw one line of the plasma
+draw_scanline
+		add cnt2,#$FE		; 2
+		inc cnt1		; 1 (3)
+
+		; Read from sine table
+		mov M,#SINE_PAGE	; 1
+		mov W,cnt1 		; 1
+		iread			; 4
+		mov pixel,W		; 1 (7)
+
+		; Read another byte
+		mov W,cnt2 		; 1
+		iread			; 4
+		add pixel,W		; 1 (6)
+	
+		; ..and another
+		mov W,vertPtr1		; 1
+		iread			; 4
+		add W,pixel		; 1 (6)
+
+		; OR in some additional bits	
+		or W,#$8A		; 1
+
+		; Output the pixel data 
+		mov RE,W		; 1
+
+		djnz xCnt,draw_scanline ;4 / 2
+		; Total: 3+7+6+6+1+1+4 = 28 clocks 	
+	
+
+		mov RE, #BLACK 		; 2. Output black
+		dec vertPtr1		; 1. Decrease vertical pointer
+
+		bank $20		; 1
+		DELAY(39)
+
+		; Draw the second scroller. Same procedure as for
+		; the first one.
+		bank $30		; 1
+		mov M,#TEXT_PAGE	; 1
+		mov W,scroller2		; 1
+		mov temp,W		; 1
+		and W,#7		; 1
+		mov temp2,W		; 1
+		clc			; 1
+		rr temp			; 1
+		clc			; 1
+		rr temp			; 1
+		clc			; 1
+		rr temp			; 1
+		mov W,temp		; 1
+		iread			; 4 (17)
+
+		; Multiply by 8
+		mov temp,W		; 1
+		add W,temp		; 1
+		mov temp,W		; 1
+		add W,temp		; 1
+		mov temp,W		; 1
+		add W,temp		; 1 (6)
+
+		mov M,#FONT_PAGE	; 1
+		add W,temp2		; 1
+		iread			; 4  
+		mov pixel,W		; 1 
+		mov temp,#8		; 2 (9)
+
+:Draw_char_line_2
+		mov W,#(COLOR2+8)	; 1
+		rr pixel		; 1. Place lsb in C
+		sc			; 2 / 1. Skip if bit is set
+		mov W,#BLACK		; 1. Bit was clear, should be black 
+		mov RE,W		; 1. Output color
+		DELAY(7)
+		djnz temp,:Draw_char_line_2 ; 4 / 2
+		mov RE,#BLACK		; 2
+
+		inc scroller1		; 1
+		inc scroller2		; 1
+		bank $20		; 1
+
+		cjb RTCC,#131,$
+
+		djnz scanline, Raster_Loop1	; Loop for the next scanline
+
+		; Here we have about 20,000 cpu cycles to perform anything.
+		; After, we'll simply use the macro ENDVBL to perform vsync preparation for
+		; the next frame.
+		; If you spend more than 20,000 cycles before calling ENDVBL, the TV may
+		; go berseck and lose syncronisation, resulting in a flickering display.
+
+	
+		; page_200 trick: this clunky trick is to prevent involuntary jumps
+		; between a page boundary.
+		jmp @page_200
+IF $ > $200
+ERROR "Page Spillage!"
+ENDIF
+
+
+;##############################################################################
+
+
+org $200
+page_200
+		page $				; Set the new page
+
+		bank $30
+		mov cnt2,#34			; Number of scanlines
+:Vblank_Loop1
+		bank $20
+		PREPARE_VIDEO_HORIZ burst_phase
+		clr RTCC
+		bank $30
+		cjae cnt2,#30, :Black_line1
+		cjb  cnt2,#14, :Black_line2
+
+		; Draw XGS overscan logo
+
+		mov RE,#BLACK		; 2. Output black
+		mov cnt1,#8		; 2. Number of pixels
+		mov M,#LOGO_PAGE	; 1
+		mov W,yCnt		; 1
+		iread			; 4. Read first byte
+		mov pixel,W		; 1
+
+		; Calculate the logo gradient
+		mov temp,cnt2		; 2
+		sub temp,#22		; 2. 22 = first_line-char_height = 30-8
+		sb temp.7		; 1. Skip if the result is negative
+		not temp		; 1. Invert bits
+		mov W,#7		; 1. Keep lower 3 bits
+		and temp,W		; 1
+		add temp,#(COLOR11+2)	; 2. Add base color
+	
+		bank $20		; 1
+		DELAY(1614 - 2 - 14 - 8 - 1 - 10)
+		bank $30		; 1
+
+:Draw_bits_0_7
+		mov W,temp ;#(COLOR14+5)	; 1
+		rr pixel		; 1. Place lsb in C
+		sc			; 2 / 1. Skip if bit is set
+		mov W,#BLACK		; 1. Bit was clear, should be black 
+		mov RE,W		; 1. Output color
+		DELAY(31)
+		djnz cnt1,:Draw_bits_0_7 ; 4 / 2
+		mov RE,#BLACK		; 2
+
+		; Read the next byte
+		mov cnt1,#8		; 2
+		mov M,#LOGO_PAGE	; 1
+		inc yCnt
+		mov W,yCnt		; 1
+		iread			; 4
+		mov pixel,W		; 1 (10)	
+:Draw_bits_8_15
+		mov W,temp ;#(COLOR14+5)	; 1
+		rr pixel		; 1
+		sc			; 2 / 1
+		mov W,#BLACK		; 1
+		mov RE,W		; 1
+		DELAY(31)
+		djnz cnt1,:Draw_bits_8_15 ; 4 / 2
+		mov RE,#BLACK		; 2
+
+		; ..and finally the last one
+		mov RE,#BLACK		; 2
+		mov cnt1,#8		; 2
+		mov M,#LOGO_PAGE	; 1
+		inc yCnt
+		mov W,yCnt		; 1
+		iread			; 4
+		mov pixel,W		; 1 (12)	
+:Draw_bits_16_23
+		mov W,temp ;#(COLOR14+5)	; 1
+		rr pixel		; 1
+		sc			; 2 / 1
+		mov W,#BLACK		; 1
+		mov RE,W		; 1
+		DELAY(31)
+		djnz cnt1,:Draw_bits_16_23 ; 4 / 2
+		nop			; 1
+		nop			; 1
+
+		mov RE,#BLACK		; 2
+		sub yCnt,#2		; 2. Set yCnt back to its prior value
+
+		; yCnt is increased by 3 on even scanlines
+		; (logo is 24 pixels wide = 3 bytes/row)
+		mov W,cnt2		; 1
+		not W
+		and W,#1		; 1
+		add yCnt,W		; 1
+		add yCnt,W		; 1
+		add yCnt,W		; 1
+
+		jmp :Next_line		; 3
+
+:Black_line1
+		mov RE, #BLACK		; ( 2 cycles ) sync
+		jmp :Next_line
+:Black_line2
+		mov RE, #BLACK		; ( 2 cycles ) sync
+		jmp :Next_line
+
+:Next_line			
+		bank $30
+		cjb RTCC,#131,$
+		djnz cnt2, :Vblank_Loop1
+		; END BOTTOM SCREEN OVERSCAN
+
+		; VERTICAL SYNC PULSE
+:Begin_Blank
+		mov RE, #SYNC		; send sync signal
+		mov !OPTION, #%11000111	; turns off interrupts, sets prescaler to 1:256
+		mov RTCC, #0		; Start RTCC counter
+
+;##############################################################################
+
+		; The idea here is to change the color burst phase every
+		; 128th frame (when chroma_cnt hits zero). The burst phase
+		; is either incremented or decremented depending on the value
+		; in chroma_delta. The delta is inverted (negated) when the
+		; color burst is 0 or 13.
+		bank $40
+		mov W,chroma_delta
+		dec chroma_cnt
+		decsz chroma_cnt
+		jmp no_chroma_change
+		bank $20
+		swap burst_phase		; Swap nibbles
+		add burst_phase,W		; Add delta	
+		and burst_phase,#15		; Only four bits of chroma
+		cje burst_phase,#13,invert_delta
+		cje burst_phase,#0,invert_delta
+		jmp dont_invert
+invert_delta
+		bank $40
+		not chroma_delta
+		inc chroma_delta		; not+inc == neg 
+		bank $20
+dont_invert
+		swap burst_phase		; Swap nibbles back to original order
+		or burst_phase,#BLACK_LEVEL	; OR in some base luma
+no_chroma_change
+		bank $30
+		; Update sine table pointers
+		add horzPtr1,#$FE 
+		inc horzPtr2
+		add vertPtr2,#2
+		mov vertPtr1,vertPtr2
+
+		mov yCnt,#0			; Reset yCnt
+
+		; Update text scroller positions
+		inc scroller1_2
+		dec scroller2_2
+		mov scroller1,scroller1_2
+		mov scroller2,scroller2_2
+		bank $20
+
+
+		mov 10,#$00
+		mov 11,#$08
+		call @UpdateMusic
+		_bank $20
+
+		; We are done, now wait for the remaining time to finish this video frame
+		; and prepare overscan (bottom and top) for the next!
+		cjb RTCC, #79, $	; Wait for remaining vsync (79*256 cycles = 20224, close enough)
+		; END VERTICAL SYNC PULSE
+
+		; TOP SCREEN OVERSCAN
+		mov !OPTION, #%11000100		; Sets prescaler to 1:32 
+		mov scanline, #32
+:Vblank_Loop3
+		PREPARE_VIDEO_HORIZ burst_phase 
+		clr RTCC
+		mov RE, #BLACK 
+		cjb RTCC,#131,$
+		djnz scanline, :Vblank_Loop3
+
+		jmp @Begin_Raster		; Loop back for the next frame
+
+
+;##############################################################################
+
+
+; Sine table
+; Calculated using the following formulae:
+;
+;	floor(cos(i*PI/64)*15.7 + 15.7)
+;
+; SINE_PAGE*$100 is added to each entry to avoid having to
+; set the M register for each read since (M:W)->M:W
+;
+SINE_PAGE	EQU	$0A
+org SINE_PAGE*$100
+include "sine.src"
+
+;##############################################################################
+
+; XGS overscan logo
+LOGO_PAGE 	EQU	$0B
+org LOGO_PAGE*$100
+include "xgslogo.src"
+
+;##############################################################################
+
+; 5x7 font
+; Each character is packed into 8 bytes (1 bit per pixel)
+; First char is space, capital letters A..Z follow.
+FONT_PAGE	EQU 	$0C
+org FONT_PAGE*$100
+include "font5x7.src"
+
+;##############################################################################
+
+; Scroller text. 32 chars
+TEXT_PAGE	EQU 	$0D
+org TEXT_PAGE*$100
+
+dw	$0E
+dw	$14
+dw	$13
+dw	$03
+dw	$00
+dw	$10
+dw	$0C
+dw	$01
+dw	$13
+dw	$0D
+dw	$01
+dw	$00
+dw	$06
+dw	$0F
+dw	$12
+dw	$00
+dw	$14
+dw	$08
+dw	$05
+dw	$00
+dw	$18
+dw	$07
+dw	$13
+dw	$1B
+dw	$0D
+dw	$05
+dw	$00
+dw	$00
+dw	$1C
+dw	$00
+dw	$00
+dw	$00

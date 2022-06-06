@@ -1,0 +1,384 @@
+; include file for general purpose macro
+
+; Look-up table using ROM page 'in_Page', offseted by 'in_Register', and output result in 'out_Register'
+; MIREAD #$0E, hello, output 	; 7 clocks
+MIREAD MACRO in_Page, in_Register, out_Register
+	mov M, in_Page			; 1
+	mov W, in_Register		; 1
+	iread				; 4
+	mov out_Register, W		; 1
+ENDM
+
+; If delay below or equal 20, no register are used
+; If delay greater than 20, counter and counter2 will be destroyed.
+DELAY MACRO clocks
+NOEXPAND
+	IF (clocks > 25500)
+		ERROR P1 "DELAY parameter is too large (maxiumm 25500)"
+	ENDIF
+
+	; Optimised output for delay below 21
+	IF (clocks = 1)
+		nop
+	ENDIF
+	IF (clocks = 2)
+		nop
+		nop
+	ENDIF
+	IF (clocks = 3)
+		jmp $+1
+	ENDIF
+	IF (clocks = 4)
+		iread
+	ENDIF
+	IF (clocks = 5)
+		iread
+		nop
+	ENDIF
+	IF (clocks = 6)
+		jmp $+1
+		jmp $+1
+	ENDIF
+	IF (clocks = 7)
+		iread
+		jmp $+1
+	ENDIF
+	IF (clocks = 8)
+		iread
+		iread
+	ENDIF
+	IF (clocks = 9)
+		iread
+		iread
+		nop
+	ENDIF
+	IF (clocks = 10)
+		iread
+		jmp $+1
+		jmp $+1
+	ENDIF
+	IF (clocks = 11)
+		iread
+		iread
+		jmp $+1
+	ENDIF
+	IF (clocks = 12)
+		iread
+		iread
+		iread
+	ENDIF
+	IF (clocks = 13)
+		iread
+		iread
+		iread
+		nop
+	ENDIF
+	IF (clocks = 14)
+		iread
+		iread
+		jmp $+1
+		jmp $+1
+	ENDIF
+	IF (clocks = 15)
+		iread
+		iread
+		iread
+		jmp $+1
+	ENDIF
+	IF (clocks = 16)
+		iread
+		iread
+		iread
+		iread
+	ENDIF
+	IF (clocks = 17)
+		iread
+		iread
+		iread
+		iread
+		nop
+	ENDIF
+	IF (clocks = 18)
+		iread
+		iread
+		iread
+		jmp $+1
+		jmp $+1
+	ENDIF
+	IF (clocks = 19)
+		iread
+		iread
+		iread
+		iread
+		jmp $+1
+	ENDIF
+	IF (clocks = 20)
+		iread
+		iread
+		iread
+		iread
+		iread
+	ENDIF
+
+	IF (clocks > 20)
+	; can't use a 'EXITM' here because this crappy assembler will go berserk with nesting level
+
+	; this macro can handle large delays up to 25,500 cycles, so to call it use the following
+	; constructions
+	
+	; cycle delay
+	; DELAY(number_of_clocks)
+
+	; for 80 mhz clock, microsecond parameters
+	; DELAY(80*microseconds)
+	; example you want a 4.5 uS delay
+	; 80*4.5 = 36
+	; DELAY(36)
+
+	; the preprocessor can NOT do floating point math, so another construction would be to scale
+	; all values by 10 then multiply by 8 rather than 80, for example, a 4.5 uS delay could be
+	; written
+	; DELAY(8*45)
+	; which is a littl more intuitive
+
+	; first compute fractional remainder of 10 and delay
+	IF (((clocks) // 10) > 0)
+
+		; first 4 clock chunks
+		REPT (((clocks) // 10)/4)
+			iread				; 4
+		ENDR
+
+		; now the remainder if any
+
+		REPT (((clocks) // 10)//4)
+			nop				; 1
+		ENDR
+	ENDIF
+
+	; next multiples of 100
+	IF (((clocks) / 100) >= 1)
+
+		; delay 100*(clocks/100), loop equals 100, therefore 1*(clocks/100) iterations
+		mov counter, #((clocks)/100) 	; 0 (djnz)
+:Loop					
+
+		; Wait for 95 cycles
+		mov counter2, #19	 	; 0 (djnz)
+:Loop100
+		djnz counter2, @:Loop100	; 5
+
+		djnz counter, @:Loop		; 5
+
+	ENDIF
+
+
+	; last compute whole multiples of 10, and delay
+	IF (( ((clocks) // 100) / 10) >= 1)
+
+		; delay 10*(clocks/10), loop equals 10, therefore (clocks/10) iterations
+		mov counter, #( ((clocks) // 100) / 10) 	; 0 (djnz)
+:Loop2
+		iread				; 4
+		nop				; 1
+		djnz counter, @:Loop2		; 5
+
+	ENDIF
+	ENDIF
+EXPAND
+ENDM
+
+; Prepare video ports and variable. 
+; You don't need to call this more than once
+INITIALIZE_VIDEO MACRO
+	mov	RE, #%00000000	;Set port E output latch to zero
+	mov	!RE,#%00000000	;Set port E to output direction
+
+	mov	overscan_color, #(COLOR14+7)
+ENDM
+
+; Initiate the starts of the vertical blank, including bottom overscan and video blank
+; You'll have to use ENDVBL sometime after this.
+STARTVBL MACRO
+	; VERTICAL BLANKING AND SYNC 
+	DELAY(504-40)	; Finish last scanline part of right overscan
+	
+	jmp @xgs_logo_draw_bottom_overscan
+xgs_logo_draw_resume
+
+	; BOTTOM SCREEN OVERSCAN (8 lines taken for the XGS logo)
+	mov counter3, #(258-SCREEN_HEIGHT)/2-8 ; 0 (djnz)
+Vblank_Loop1
+
+	call @PREPARE_VIDEO_HORIZ ;4
+
+	; draw scanline (52.6 us)
+	mov RE, overscan_color		; ( 2 cycles ) sync
+	DELAY (CLK_SCALE*526 - 2 - 4 - 4)
+	djnz counter3, Vblank_Loop1 ;4
+
+	; END BOTTOM SCREEN OVERSCAN
+
+	; VERTICAL SYNC PULSE
+
+Begin_Blank
+	mov RE, #SYNC		; send sync signal
+	mov !OPTION, #%11000111	; turns off interrupts, sets prescaler to 1:256
+	mov RTCC, #0		; Start RTCC counter
+ENDM
+
+; Terminate Vertical blank, draw next frame top-overscan.
+ENDVBL MACRO
+	cjb RTCC, #79, $	; Wait for remaining vsync (79*256 cycles = 20224, close enough)
+	; END VERTICAL SYNC PULSE
+
+	; TOP SCREEN OVERSCAN
+	mov counter3, #(258-SCREEN_HEIGHT)/2	; render scanlines
+
+Vblank_Loop3
+
+	call @PREPARE_VIDEO_HORIZ ; 4
+
+	; draw scanline (52.6 us) 4208 clocks
+	; Except the last scanline which is (4208 - 8) clocks free to spend
+	mov RE, overscan_color	; 2
+
+	dec counter3	; 1
+	cje counter3, #0, @vblank_loop3_finish ;3/5
+	DELAY (4208 - 9 - 4)
+
+	jmp @Vblank_Loop3	; 3
+vblank_loop3_finish
+
+	; END TOP SCREEN OVERSCAN
+ENDM
+
+; Read both joystick and output them in 'joystick1' and 'joystick2'
+READ_JOYSTICKS MACRO
+NOEXPAND
+	; this macro reads in the joysticks, again, the only timing bottlneck is the
+	; shift registers (74HC166) which have a maximum clock speed of approx. 25 Mhz!
+	; so we need to make sure that at a clock of 80 Mhz, the delays are large enough
+	; for the clock, setup, hold, etc. times of the serial chips not to be violated
+	; currently the function works up to 80 Mhz
+
+	; the function works in the following steps
+	;
+	; step 1: latch the data from joy 0 and joy 1 into the serial registers
+	; step 2: shift the 16-bits of data out of the shift registers representing the 
+	;         joysticks button states into the SX52
+	; step 3: return the data
+
+	; parameters on entry
+
+	; return values
+
+	; joystick1   - byte holds left joystick   [ X | X | X | X | UP | DN | RT | LT | FIRE ]
+	; joystick2   - byte holds right joystick  [ X | X | X | X | UP | DN | RT | LT | FIRE ]
+
+	; SX52 port bit mappings
+
+	;RA0     -> JOY_CLK
+	;RA1     -> JOY_SH/LD
+	;RA2     -> JOY_DATAOUT
+EXPAND
+	; port A[2:0] used for joystick control, set to IN | OUT | OUT
+	; We have to do this every time because the sound system uses the same port (RA)
+	mov W,#TRIS
+	mov M,W
+	mov	 RA, #%00000000	;Set port A output latch to zero
+	mov	!RA, #%11111100	;Set port A to output direction
+
+	; step 1: read in port and mask control bits
+		
+	mov	W, RA
+	and	W, #JOY_PORT_MASK
+
+	; step 2: prepare for read
+
+	mov	RA, W
+
+	; step 3: latch joysticks into shift registers
+
+	clrb	RA.1		; JOY_SH/LD = (0), set parallel load mode
+
+	DELAY(1)
+
+	setb	RA.0		; JOY_CLK   = (1), clock
+
+	DELAY(1)
+
+	clrb	RA.0		; JOY_CLK   = (0), clock
+
+	DELAY(1)
+
+	; step 4: shift data into system, 16-bits
+
+	setb	RA.1		; JOY_SH/LD = (1), set serial shift mode
+
+	; shift 16-bits of address into latch
+	mov 	counter, #16	; 16 bits per joystick read
+
+:Read_Joy_Bit_Loop
+
+	rl	joystick1	; rotate results right thru carry
+	rl	joystick2	; rotate upper results from from including carry
+
+	; read joy in data on port bit first
+
+	sb 	RA.2		; jump over if set
+	jmp 	:Joy_Bit_Zero
+
+	; bit set, write 1 to joystick results packet
+
+	setb 	joystick1.0	; data8[8] = (1)
+	jmp	:Joy_Clock_Next_Bit
+
+:Joy_Bit_Zero
+
+	; bit clear, write 0 to joystick results packet
+
+	clrb 	joystick1.0	; data8[7] = (0)
+
+:Joy_Clock_Next_Bit
+
+	; clock next data bit
+
+	DELAY(1)
+
+	setb	RA.0		; JOY_CLK = (1), clock
+
+	DELAY(1)
+
+	clrb	RA.0		; JOY_CLK = (0), clock
+
+	DELAY(1)
+		
+	djnz 	counter, :Read_Joy_Bit_Loop
+
+	; reset all joystick control bits
+	mov	W, RA
+	and	W, #JOY_PORT_MASK
+	mov	RA, W
+ENDM
+
+; Prepare sound port command. Use this once before using any sound command 
+INITIALIZE_SOUND MACRO
+	mov W,#TRIS
+	mov M,W
+	; DON'T OPTIMIZE THIS: The 1-cycle delay between those commands is NEEDED
+	mov	RA, #%00000000	; Set port A output latch to zero
+	mov	!RA,#%00000000	; Set port A to output direction
+ENDM
+
+; Macro to define a tile map which is:
+; First byte: Color of this scanline
+; 1..20 bytes: Tile offset (tile number * 8)
+; Add the page offset ($B00 for tile 0..31, and $C00 for tile 32..63, etc)
+; (remember that 32*8 = 256 which is $100)
+DEFINE_TILES MACRO
+	REPT \0
+		dw \%*8 + $B00
+	ENDR
+	;dw \1*8,\2*8,\3*8,\4*8,\5*8,\6*8,\7*8,\8*8,\9*8,\10*8,\11*8,\12*8,\13*8,\14*8,\15*8,\16*8,\17*8,\18*8,\19*8,\20*8
+ENDM

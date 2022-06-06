@@ -1,0 +1,599 @@
+; include file for general purpose macro
+
+_bank macro 1
+	bank \1
+	IF \1 & %10000000
+		setb fsr.7
+	ELSE
+		clrb fsr.7
+	ENDIF
+ENDM
+
+
+; Add two 8:8 fixed point numbers
+; ex: ADD_8_8 w1,f1,w2,f2  (w=whole, f=fractional)
+ADD_8_8 MACRO 4
+	add \2,\4
+	snc
+	inc \1
+	add \1,\3
+ENDM
+
+
+INC_8_8 MACRO 2
+	add \2,#1
+	snc
+	inc \1
+ENDM
+
+
+; UNUSED DELAY MACRO, TEMPORARY WORK IN PROGRESS. Do not use.
+DELAY_TIME MACRO clocks
+	IF (clocks > 256)
+		mov !OPTION, #%11000111	; turns off interrupts, sets prescaler to 1:256 (2 cycles)
+		mov RTCC, #0		; Start RTCC counter (2 cycles)
+		cjb RTCC, #((clocks-13)/256), $ ; (4 cycles when finished) (+ 0..6 cycles)
+	ENDIF
+
+	IF ((clocks//256) < 13)
+		; first 4 clock chunks
+		REPT (((clocks) // 13)/4)
+			iread				; 4
+		ENDR
+
+		; now the remainder if any
+		REPT (((clocks) // 13)//4)
+			nop				; 1
+		ENDR
+
+		EXITM
+	ENDIF
+
+	mov !OPTION, #%11001000	; sets prescaler to 1:1 (2 cycles)
+	mov RTCC, #0		; Start RTCC counter (2 cycles)
+	nop
+	; Now wait until RTCC has reached clocks-13. Why 13?
+	; Because we already spent 4 cycles, we'll need 4 more at the end
+	; + RTCC needs 2 cycles to really start counting
+	; and finally +3 because the jmp instruction in 'cjb' takes 3 cycles
+	cjb RTCC, #((clocks//256)-13), $
+ENDM
+
+
+
+DELAY MACRO clocks
+NOEXPAND
+	IF (clocks > 25500)
+		ERROR P1 "DELAY parameter is too large (maxiumm 25500)"
+	ENDIF
+
+	; Optimised output for delay below 21
+	IF (clocks = 1)
+		nop
+	ENDIF
+	IF (clocks = 2)
+		nop
+		nop
+	ENDIF
+	IF (clocks = 3)
+		jmp $+1
+	ENDIF
+	IF (clocks = 4)
+		iread
+	ENDIF
+	IF (clocks = 5)
+		iread
+		nop
+	ENDIF
+	IF (clocks = 6)
+		jmp $+1
+		jmp $+1
+	ENDIF
+	IF (clocks = 7)
+		iread
+		jmp $+1
+	ENDIF
+	IF (clocks = 8)
+		iread
+		iread
+	ENDIF
+	IF (clocks = 9)
+		iread
+		iread
+		nop
+	ENDIF
+	IF (clocks = 10)
+		iread
+		jmp $+1
+		jmp $+1
+	ENDIF
+	IF (clocks = 11)
+		iread
+		iread
+		jmp $+1
+	ENDIF
+	IF (clocks = 12)
+		iread
+		iread
+		iread
+	ENDIF
+	IF (clocks = 13)
+		iread
+		iread
+		iread
+		nop
+	ENDIF
+	IF (clocks = 14)
+		iread
+		iread
+		jmp $+1
+		jmp $+1
+	ENDIF
+	IF (clocks = 15)
+		iread
+		iread
+		iread
+		jmp $+1
+	ENDIF
+	IF (clocks = 16)
+		iread
+		iread
+		iread
+		iread
+	ENDIF
+	IF (clocks = 17)
+		iread
+		iread
+		iread
+		iread
+		nop
+	ENDIF
+	IF (clocks = 18)
+		iread
+		iread
+		iread
+		jmp $+1
+		jmp $+1
+	ENDIF
+	IF (clocks = 19)
+		iread
+		iread
+		iread
+		iread
+		jmp $+1
+	ENDIF
+	IF (clocks = 20)
+		iread
+		iread
+		iread
+		iread
+		iread
+	ENDIF
+
+	IF (clocks = 21)
+		iread
+		iread
+		iread
+		iread
+		iread
+		nop
+	ENDIF
+	IF (clocks = 22)
+		iread
+		iread
+		iread
+		iread
+		iread
+		nop
+		nop
+	ENDIF
+	IF (clocks = 23)
+		iread
+		iread
+		iread
+		iread
+		iread
+		jmp $+1
+	ENDIF
+	IF (clocks = 24)
+		iread
+		iread
+		iread
+		iread
+		iread
+		iread
+	ENDIF
+	IF (clocks = 25)
+		iread
+		iread
+		iread
+		iread
+		iread
+		iread
+		nop
+	ENDIF
+	IF (clocks = 26)
+		iread
+		iread
+		iread
+		iread
+		iread
+		iread
+		nop
+		nop
+	ENDIF
+	IF (clocks = 27)
+		iread
+		iread
+		iread
+		iread
+		iread
+		iread
+		jmp $+1
+	ENDIF
+	IF (clocks = 28)
+		iread
+		iread
+		iread
+		iread
+		iread
+		iread
+		iread
+	ENDIF
+	IF (clocks = 29)
+		iread
+		iread
+		iread
+		iread
+		iread
+		iread
+		iread
+		nop
+	ENDIF
+	IF (clocks = 30)
+		iread
+		iread
+		iread
+		iread
+		iread
+		iread
+		jmp $+1
+		jmp $+1
+	ENDIF
+	IF (clocks = 31)
+		iread
+		iread
+		iread
+		iread
+		iread
+		iread
+		iread
+		jmp $+1
+	ENDIF
+	IF (clocks = 32)
+		iread
+		iread
+		iread
+		iread
+		iread
+		iread
+		iread
+		iread
+	ENDIF
+
+	IF (clocks > 32)
+	; can't use a 'EXITM' here because this crappy assembler will go berserk with nesting level
+
+	; this macro can handle large delays up to 25,500 cycles, so to call it use the following
+	; constructions
+	
+	; cycle delay
+	; DELAY(number_of_clocks)
+
+	; for 80 mhz clock, microsecond parameters
+	; DELAY(80*microseconds)
+	; example you want a 4.5 uS delay
+	; 80*4.5 = 36
+	; DELAY(36)
+
+	; the preprocessor can NOT do floating point math, so another construction would be to scale
+	; all values by 10 then multiply by 8 rather than 80, for example, a 4.5 uS delay could be
+	; written
+	; DELAY(8*45)
+	; which is a littl more intuitive
+
+	; first compute fractional remainder of 10 and delay
+	IF (((clocks) // 10) > 0)
+
+		; first 4 clock chunks
+		REPT (((clocks) // 10)/4)
+			iread				; 4
+		ENDR
+
+		; now the remainder if any
+
+		REPT (((clocks) // 10)//4)
+			nop				; 1
+		ENDR
+	ENDIF
+
+	; next multiples of 100
+	IF (((clocks) / 100) >= 1)
+
+		; delay 100*(clocks/100), loop equals 100, therefore 1*(clocks/100) iterations
+		mov counter, #((clocks)/100) 	; 0 (djnz)
+:Loop					
+
+		; Wait for 95 cycles
+		mov counter2, #19	 	; 0 (djnz)
+:Loop100
+		djnz counter2, @:Loop100	; 5
+
+		djnz counter, @:Loop		; 5
+
+	ENDIF
+
+
+	; last compute whole multiples of 10, and delay
+	IF (( ((clocks) // 100) / 10) >= 1)
+
+		; delay 10*(clocks/10), loop equals 10, therefore (clocks/10) iterations
+		mov counter, #( ((clocks) // 100) / 10) 	; 0 (djnz)
+:Loop2
+		iread				; 4
+		nop				; 1
+		djnz counter, @:Loop2		; 5
+
+	ENDIF
+	ENDIF
+EXPAND
+ENDM
+
+
+
+; Prepare video ports and variable. 
+; You don't need to call this more than once
+INITIALIZE_VIDEO MACRO
+	mov	RE, #%00000000	;Set port E output latch to zero
+	mov	!RE,#%00000000	;Set port E to output direction
+
+	mov	burst_phase, #CBURST_ON	; Set standard color burst reference. Note that you CANNOT
+					; change this value between scanlines.
+					; So rule of thumb: set it once here and never touch it.
+	mov	overscan_color, #(COLOR14+7)
+ENDM
+
+; Prepare and send various scanline video signal
+PREPARE_VIDEO_HORIZ MACRO 1
+	; front porch 1.5us 
+
+	mov RE, #BLACK		; ( 2 cycles ) black
+	DELAY (CLK_SCALE*15-2)
+
+	; hsync 4.7us
+	mov RE, #SYNC		; ( 2 cycles ) sync
+	DELAY (CLK_SCALE*47 - 2)
+
+	; pre-burst .6us
+	mov RE, #BLACK		; ( 2 cycles ) sync
+	DELAY (CLK_SCALE*6 - 2)
+
+	; color burst reference 2.5us (9-10 clocks)
+	mov RE, \1	; ( 2 cycles ) sync
+	DELAY (CLK_SCALE*25 - 2)
+
+	; post-burst 1.6us
+
+	mov RE, #BLACK		; ( 2 cycles ) sync
+	DELAY (CLK_SCALE*16 - 2)
+ENDM
+
+
+
+; Prepare and send various scanline video signal
+PREPARE_VIDEO_HORIZ_PAL MACRO 1
+	; front porch 1.6us 
+	mov RE, #BLACK		; ( 2 cycles ) black
+	DELAY (CLK_SCALE*16-2)
+
+	; hsync 4.7us
+	mov RE, #SYNC		; ( 2 cycles ) sync
+	DELAY (CLK_SCALE*47 - 2)
+
+	; pre-burst .9us
+	mov RE, #BLACK		; ( 2 cycles ) sync
+	DELAY (CLK_SCALE*9 - 2)
+
+	; color burst reference 2.57s (9-10 clocks)
+	mov RE, \1	; ( 2 cycles ) sync
+	DELAY (CLK_SCALE*27 - 2)
+
+	; post-burst 2.1us
+	mov RE, #BLACK		; ( 2 cycles ) sync
+	add burst_phase,phase_alt	; 2
+	xor phase_alt,#$F0		; 2
+	add phase_alt,#$10		; 2
+	DELAY (CLK_SCALE*21 - 2 - 6)
+ENDM
+
+
+; Initiate the starts of the vertical blank, including bottom overscan and video blank
+; You'll have to use ENDVBL sometime after this.
+STARTVBL MACRO
+	; VERTICAL BLANKING AND SYNC 
+	
+	; BOTTOM SCREEN OVERSCAN
+
+	mov scanline, #(258-SCREEN_HEIGHT)/2
+Vblank_Loop1
+
+	PREPARE_VIDEO_HORIZ
+
+	; draw scanline (52.6 us)
+	mov RE, overscan_color		; ( 2 cycles ) sync
+	DELAY (CLK_SCALE*526 - 2 - 4)
+	djnz scanline, Vblank_Loop1
+
+; X---X----XXX----XXX-
+; X---X---X---X--X---X
+; -X-X----X------X----
+; --X-----X XXX---XXX-
+; -X-X----X---X------X
+; X---X---X---X------X
+; X---X---X---X--X---X
+; X---X----XXX----XXX-
+
+	; END BOTTOM SCREEN OVERSCAN
+
+	; VERTICAL SYNC PULSE
+
+Begin_Blank
+	mov RE, #SYNC		; send sync signal
+	mov !OPTION, #%11000111	; turns off interrupts, sets prescaler to 1:256
+	mov RTCC, #0		; Start RTCC counter
+ENDM
+
+; Terminate Vertical blank, draw next frame top-overscan.
+ENDVBL MACRO
+	cjb RTCC, #79, $	; Wait for remaining vsync (79*256 cycles = 20224, close enough)
+	; END VERTICAL SYNC PULSE
+
+	; TOP SCREEN OVERSCAN
+	mov scanline, #(258-SCREEN_HEIGHT)/2	; render scanlines
+
+Vblank_Loop3
+
+	PREPARE_VIDEO_HORIZ
+
+	; draw scanline (52.6 us)
+	mov RE, #BLACK ;overscan_color	; ( 2 cycles ) sync
+	DELAY (CLK_SCALE*526 - 2 - 4)
+	djnz scanline, Vblank_Loop3
+	; END TOP SCREEN OVERSCAN
+ENDM
+
+; Read both joystick and output them in 'joystick1' and 'joystick2'
+READ_JOYSTICKS MACRO
+NOEXPAND
+	; this macro reads in the joysticks, again, the only timing bottlneck is the
+	; shift registers (74HC166) which have a maximum clock speed of approx. 25 Mhz!
+	; so we need to make sure that at a clock of 80 Mhz, the delays are large enough
+	; for the clock, setup, hold, etc. times of the serial chips not to be violated
+	; currently the function works up to 80 Mhz
+
+	; the function works in the following steps
+	;
+	; step 1: latch the data from joy 0 and joy 1 into the serial registers
+	; step 2: shift the 16-bits of data out of the shift registers representing the 
+	;         joysticks button states into the SX52
+	; step 3: return the data
+
+	; parameters on entry
+
+	; return values
+
+	; joystick1   - byte holds left joystick   [ X | X | X | X | UP | DN | RT | LT | FIRE ]
+	; joystick2   - byte holds right joystick  [ X | X | X | X | UP | DN | RT | LT | FIRE ]
+
+	; SX52 port bit mappings
+
+	;RA0     -> JOY_CLK
+	;RA1     -> JOY_SH/LD
+	;RA2     -> JOY_DATAOUT
+EXPAND
+	; port A[2:0] used for joystick control, set to IN | OUT | OUT
+	; We have to do this every time because the sound system uses the same port (RA)
+	mode TRIS
+	mov	 RA, #%00000000	;Set port A output latch to zero
+	mov	!RA, #%11111100	;Set port A to output direction
+
+	; step 1: read in port and mask control bits
+		
+	mov	W, RA
+	and	W, JOY_PORT_MASK
+
+	; step 2: prepare for read
+
+	or	W,#(JOY_PORT_CLK_0 | JOY_PORT_SH_nLD_0)	
+	mov	RA, W
+
+	; step 3: latch joysticks into shift registers
+
+	clrb	RA.1		; JOY_SH/LD = (0), set parallel load mode
+
+	DELAY(1)
+
+	setb	RA.0		; JOY_CLK   = (1), clock
+
+	DELAY(1)
+
+	clrb	RA.0		; JOY_CLK   = (0), clock
+
+	DELAY(1)
+
+	; step 4: shift data into system, 16-bits
+
+	setb	RA.1		; JOY_SH/LD = (1), set serial shift mode
+
+	; shift 16-bits of address into latch
+	mov 	Count1, #16	; 16 bits per joystick read
+
+:Read_Joy_Bit_Loop
+
+	rl	joystick1	; rotate results right thru carry
+	rl	joystick2	; rotate upper results from from including carry
+
+	; read joy in data on port bit first
+
+	sb 	RA.2		; jump over if set
+	jmp 	:Joy_Bit_Zero
+
+	; bit set, write 1 to joystick results packet
+
+	setb 	joystick1.0	; data8[8] = (1)
+	jmp	:Joy_Clock_Next_Bit
+
+:Joy_Bit_Zero
+
+	; bit clear, write 0 to joystick results packet
+
+	clrb 	joystick1.0	; data8[7] = (0)
+
+:Joy_Clock_Next_Bit
+
+	; clock next data bit
+
+	DELAY(1)
+
+	setb	RA.0		; JOY_CLK = (1), clock
+
+	DELAY(1)
+
+	clrb	RA.0		; JOY_CLK = (0), clock
+
+	DELAY(1)
+		
+	djnz 	Count1, :Read_Joy_Bit_Loop
+
+	; reset all joystick control bits
+	mov	W, RA
+	and	W, JOY_PORT_MASK
+	or	W,#(JOY_PORT_CLK_0 | JOY_PORT_SH_nLD_0)	
+	nop
+	mov	RA, W
+ENDM
+
+; UNUSED SOUND MACRO. Yet.
+SOUND MACRO reg, data
+	bank	#$20
+	mov 	screg,  reg
+	mov 	scdata, data
+	call 	Write_Snd_Command
+ENDM
+
+; Prepare sound port command. Use this once before using any sound command 
+INITIALIZE_SOUND MACRO
+	mode 	TRIS		; set the mode select to output direction
+	mov	RA, #%00000000	; Set port A output latch to zero
+	mov	!RA,#%00000000	; Set port A to output direction
+ENDM

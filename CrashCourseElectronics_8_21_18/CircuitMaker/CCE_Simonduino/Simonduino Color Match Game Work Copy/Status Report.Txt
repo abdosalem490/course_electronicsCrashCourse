@@ -1,0 +1,16 @@
+Project Outputs Generation Report
+---------------------------------
+Start Output Generation At 5:37:18 PM On 8/2/2017
+
+Output: NC Drill
+Type  : NC Drill
+From  : PCB Document [CCE_Simonduino_01.CMPcbDoc]
+   Generated File[CCE_Simonduino_01.TXT]
+   Generated File[CCE_Simonduino_01.LDP]
+   Generated File[CCE_Simonduino_01.DRR]
+
+
+Files Generated   : 3
+Documents Printed : 0
+
+Finished Output Generation At 5:37:19 PM On 8/2/2017

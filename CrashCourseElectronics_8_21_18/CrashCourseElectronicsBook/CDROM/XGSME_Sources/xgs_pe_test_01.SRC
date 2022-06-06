@@ -1,0 +1,305 @@
+; /////////////////////////////////////////////////////////////////////////////
+; Set device attributes
+; /////////////////////////////////////////////////////////////////////////////
+
+	DEVICE 	SX28L, STACKX, OPTIONX, TURBO
+	IRC_CAL IRC_FAST
+	
+	RESET	Start
+	;FREQ 	35_795_450 	; this is a directive to the ide only
+			  	; if you want to put the XGS ME into RUN mode
+			  	; you must make sure you go into the 
+				; device settings and make sure that
+				; HS3 is enabled, and crystal drive and
+				; feedback are disabled and then re-program
+				; the chip in PGM mode and then switch it to RUN
+	FREQ 		42_954_000
+	CLK_SCALE	EQU	12
+
+; /////////////////////////////////////////////////////////////////////////////
+; Defines
+; /////////////////////////////////////////////////////////////////////////////
+
+
+
+; /////////////////////////////////////////////////////////////////////////////
+; Global variables
+; /////////////////////////////////////////////////////////////////////////////
+
+; these are just working vars for the code, nothing special
+
+counter		equ  	$08 ; general counter
+counter2	equ 	$09 ; general counter
+x_pos		equ	$0A ; x position
+y_pos		equ	$0B ; y position
+var_0		equ	$0C
+var_1		equ	$0D
+
+; /////////////////////////////////////////////////////////////////////////////
+; Macros
+; /////////////////////////////////////////////////////////////////////////////
+
+DELAY MACRO clocks
+; this new macro is slightly different than the one found in othe demos
+; this macro can handle large delays up to 25,500 cycles, so to call it use the following
+; constructions
+
+; cycle delay
+; DELAY(number_of_clocks)
+
+; for 80 mhz clock, microsecond parameters
+; DELAY(80*microseconds)
+; example you want a 4.5 uS delay
+; 80*4.5 = 36
+; DELAY(36)
+
+; the preprocessor can NOT do floating point math, so another construction would be to scale
+; all values by 10 then multiply by 8 rather than 80, for example, a 4.5 uS delay could be
+; written
+; DELAY(8*45)
+; which is a little more intuitive
+
+; first compute fractional remainder of 10 and delay
+IF (((clocks) // 10) > 0)
+
+; first 3 clock chunks
+	REPT (((clocks) // 10)/3)
+	JMP $ + 1
+	ENDR
+
+; now the remainder if any
+
+	REPT (((clocks) // 10)//3)
+	NOP
+	ENDR
+ENDIF
+
+; next multiples of 100
+IF (((clocks) / 100) >= 1)
+
+; delay 100*(clocks/100), loop equals 100, therefore 1*(clocks/100) iterations
+	mov counter, #((clocks)/100) 	; (2)
+:Loop					
+
+	mov counter2, #24	 	; (2)
+:Loop100					
+	djnz counter2, :Loop100		; (4/2)
+
+	djnz counter, :Loop		; (4/2)
+
+ENDIF
+
+; last compute whole multiples of 10, and delay
+IF (( ((clocks) // 100) / 10) >= 1)
+
+; delay 10*(clocks/10), loop equals 10, therefore (clocks/10) iterations
+	mov counter, #( ((clocks) // 100) / 10) 	; (2)
+:Loop2					
+	jmp $ + 1			; (3)
+	jmp $ + 1			; (3)
+	djnz counter, :Loop2		; (4/2)
+
+ENDIF
+
+ENDM
+
+; /////////////////////////////////////////////////////////////////////////////
+; Data watches
+; /////////////////////////////////////////////////////////////////////////////
+
+;		WATCH	var,size[8|16],format[UDEC]
+
+; /////////////////////////////////////////////////////////////////////////////
+; Subroutines
+; /////////////////////////////////////////////////////////////////////////////
+
+		org 	$000
+
+Page0_Start
+
+; /////////////////////////////////////////////////////////////////////////////
+;  Begin program after restart
+; /////////////////////////////////////////////////////////////////////////////
+
+Start		
+		bank	#$10
+
+; Initialize I/O controller
+
+		mov	w, #$1F		; Set mode register to write direction register
+		mov	m,w
+
+		mov	 RA, #%00000000	; Set port A output latch to zero
+		mov	!RA, #%00000000	; Set port A direction
+		
+
+		mov	 RC, #%00000000	; Set port C output latch to zero
+		mov	!RC, #%00000000	; Set port C direction
+
+
+	;	mov	 RB, #%00000000	; Set port B output latch to zero
+	;	mov	!RB, #%00000000	; Set port B direction
+
+		mov 	!RB, #%11111111 ; Set port B direction 
+		mov	w, #$1E		; Set mode register to write pullup resistor
+		mov	m,w
+		mov	!RB, #%00000000 ; Set joystick inputs pullups on (0=on, 1=off)
+
+
+
+
+
+
+IF 0
+Memory_Test_Loop1
+
+		mov $08, $08
+		inc $08
+		mov $09, $08
+		inc $08
+		mov $0A, $08
+		inc $08
+		mov $0B, $08
+		inc $08
+		mov $0C, $08
+		inc $08
+		mov $0D, $08
+		inc $08
+		mov $0E, $08
+		inc $08
+		mov $0F, $08
+		inc $08
+
+		BANK $10
+
+		mov $10, $08
+		inc $08
+		mov $11, $08
+		inc $08
+		mov $12, $08
+		inc $08
+
+		mov $30, $08
+		inc $08
+		mov $31, $08
+		inc $08
+		mov $32, $08
+		inc $08
+
+		BANK $30
+
+		mov $30, $08
+		inc $08
+		mov $31, $08
+		inc $08
+		mov $32, $08
+		inc $08
+
+
+		mov fsr, #$10
+		mov ind, $08
+		inc $08
+
+		mov fsr, #$31
+		mov ind, $08
+		inc $08
+
+		mov fsr, #$52
+		mov ind, $08
+		inc $08
+
+		mov fsr, #$73
+		mov ind, $08
+		inc $08
+
+
+		mov fsr, #$10
+		mov indf, #$AA
+
+		mov fsr, #$20
+		mov indf, #$BB
+
+		mov fsr, #$30
+		mov indf, #$CC
+break
+
+		clr counter 
+
+		mov m, #$04
+		mov w, counter
+		IREAD
+
+		inc counter
+
+		mov m, #$04
+		mov w, counter
+		IREAD
+
+
+		inc counter
+
+		mov m, #$04
+		mov w, counter
+		IREAD
+
+		inc counter
+
+		mov m, #$04
+		mov w, counter
+		IREAD
+
+
+		jmp @Page1_Start
+
+		org $200
+Page1_Start
+
+		jmp @Memory_Test_Loop1
+
+
+Memory_Test_Loop2
+
+
+
+
+		org $400
+
+Data_Table	dw $000, $111, $222, $333, $444, $555, $666, $777, $888, $999, $AAA, $BBB, $CCC, $DDD, $EEE, $FFF
+
+ENDIF
+
+
+
+IF 1
+Joystick_Test_Loop1
+		mov RA, RB
+		
+		; test for fire button
+		; if fire=0 then set RA=0
+
+		sb RB.4
+		mov RA, #0
+
+		jmp Joystick_Test_Loop1
+ENDIF
+
+
+IF 0
+Sound_Test_Init
+
+		mov RC, #%10101010
+
+Sound_Test_Loop1
+
+		mov var_0, RC
+		rr RC
+		xor RC, var_0
+		rr RC
+		rr RC
+		xor RC, var_0
+		xor RC, RB	
+
+		DELAY(10000)
+
+		jmp Sound_Test_Loop1
+END
